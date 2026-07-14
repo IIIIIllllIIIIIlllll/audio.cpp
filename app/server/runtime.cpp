@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <zlib.h>
 
 namespace minitts::server {
 namespace {
@@ -534,6 +535,74 @@ engine::runtime::TaskRequest build_openai_transcription_request(const Value & bo
     return request;
 }
 
+static const std::unordered_map<std::string, std::string> MIME_TYPES = {
+    {".html", "text/html; charset=utf-8"},
+    {".css", "text/css; charset=utf-8"},
+    {".js", "application/javascript; charset=utf-8"},
+    {".json", "application/json"},
+    {".png", "image/png"},
+    {".svg", "image/svg+xml"},
+    {".ico", "image/x-icon"},
+    {".wasm", "application/wasm"},
+    {".wav", "audio/wav"},
+    {".mp3", "audio/mpeg"},
+    {".woff2", "font/woff2"},
+};
+
+static std::string mime_type_for(const std::string & path) {
+    const auto dot = path.rfind('.');
+    if (dot != std::string::npos) {
+        const auto it = MIME_TYPES.find(path.substr(dot));
+        if (it != MIME_TYPES.end()) {
+            return it->second;
+        }
+    }
+    return "application/octet-stream";
+}
+
+static bool is_compressible(const std::string & mime_type) {
+    return mime_type.compare(0, 5, "text/") == 0 ||
+           mime_type.compare(0, 22, "application/javascript") == 0 ||
+           mime_type.compare(0, 16, "application/json") == 0 ||
+           mime_type.compare(0, 13, "image/svg+xml") == 0;
+}
+
+static std::string gzip_compress(const std::string & data) {
+    z_stream stream{};
+    constexpr int window_bits = 15 + 16;  // 15 = deflate, 16 = gzip header
+    if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, window_bits, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        throw std::runtime_error("deflateInit2 failed");
+    }
+    stream.avail_in = static_cast<uInt>(data.size());
+    stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.data()));
+    std::string out;
+    out.resize(deflateBound(&stream, stream.avail_in));
+    stream.avail_out = static_cast<uInt>(out.size());
+    stream.next_out = reinterpret_cast<Bytef *>(out.data());
+    if (deflate(&stream, Z_FINISH) != Z_STREAM_END) {
+        deflateEnd(&stream);
+        throw std::runtime_error("gzip compression failed");
+    }
+    out.resize(stream.total_out);
+    deflateEnd(&stream);
+    return out;
+}
+
+static bool is_path_safe(const std::filesystem::path & root, const std::filesystem::path & candidate) {
+    std::error_code ec;
+    const auto canonical_root = std::filesystem::weakly_canonical(root, ec);
+    if (ec) return false;
+    const auto canonical = std::filesystem::weakly_canonical(candidate, ec);
+    if (ec) return false;
+    const auto root_str = canonical_root.string();
+    const auto path_str = canonical.string();
+    if (root_str.size() > path_str.size()) return false;
+    const char sep = static_cast<char>(std::filesystem::path::preferred_separator);
+    const auto prefix_sep = root_str.empty() || root_str.back() == sep
+        ? root_str : root_str + sep;
+    return path_str.compare(0, prefix_sep.size(), prefix_sep) == 0 || path_str == root_str;
+}
+
 }  // namespace
 
 ServerState::ServerState(ServerConfig config, std::filesystem::path request_base)
@@ -549,6 +618,9 @@ ServerState::ServerState(ServerConfig config, std::filesystem::path request_base
 }
 
 HttpResponse ServerState::handle(const HttpRequest & request) {
+    if (request.method == "OPTIONS") {
+        return handle_options();
+    }
     if (request.method == "GET" && request.path == "/health") {
         return json_response(
             "{\"status\":\"ok\",\"backend\":\"" +
@@ -575,7 +647,99 @@ HttpResponse ServerState::handle(const HttpRequest & request) {
     if (request.method == "POST" && request.path == "/v1/tasks/stream") {
         return handle_generic_stream(request.body);
     }
+    if (request.method == "GET" && config_.web_root.empty() == false) {
+        if (request.path == "/") {
+            return handle_static(request);
+        }
+        if (request.path.rfind("/web/", 0) == 0) {
+            return handle_static(request);
+        }
+    }
     return error_response(404, "unknown endpoint: " + request.path, "not_found");
+}
+
+HttpResponse ServerState::handle_options() const {
+    HttpResponse response;
+    response.status = 204;
+    response.body.clear();
+    response.content_type = "text/plain";
+    return response;
+}
+
+HttpResponse ServerState::handle_static(const HttpRequest & request) {
+    if (config_.web_root.empty()) {
+        return error_response(404, "web root not configured", "not_found");
+    }
+    std::string relative = request.path;
+    if (relative == "/") {
+        relative = "index.html";
+    } else if (relative.rfind("/web/", 0) == 0) {
+        relative = relative.substr(5);  // strip "/web/"
+    }
+    if (relative.empty() || relative.find("..") != std::string::npos || relative.find("//") != std::string::npos) {
+        return error_response(404, "invalid path", "not_found");
+    }
+    const auto file_path = config_.web_root / relative;
+    if (!is_path_safe(config_.web_root, file_path)) {
+        return error_response(404, "path traversal denied", "not_found");
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file_path, ec) || ec) {
+        return error_response(404, "file not found: " + relative, "not_found");
+    }
+    const auto mime = mime_type_for(relative);
+    const auto file_mtime = std::filesystem::last_write_time(file_path, ec);
+    if (ec) {
+        return error_response(500, "failed to read file metadata", "internal_error");
+    }
+
+    bool accepts_gzip = false;
+    if (const auto it = request.headers.find("accept-encoding"); it != request.headers.end()) {
+        accepts_gzip = it->second.find("gzip") != std::string::npos;
+    }
+
+    HttpResponse response;
+    response.content_type = mime;
+
+    if (accepts_gzip && is_compressible(mime)) {
+        std::string cache_key = file_path.string();
+        {
+            std::lock_guard<std::mutex> lock(gzip_cache_mutex_);
+            const auto cache_it = gzip_cache_.find(cache_key);
+            if (cache_it != gzip_cache_.end() && cache_it->second.mtime == file_mtime) {
+                response.body = cache_it->second.data;
+            }
+        }
+        if (response.body.empty()) {
+            std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+            if (!file) {
+                return error_response(500, "failed to open file", "internal_error");
+            }
+            const auto size = file.tellg();
+            std::string raw(static_cast<size_t>(size), '\0');
+            file.seekg(0);
+            file.read(raw.data(), size);
+            file.close();
+            auto compressed = gzip_compress(raw);
+            {
+                std::lock_guard<std::mutex> lock(gzip_cache_mutex_);
+                gzip_cache_[cache_key] = {compressed, file_mtime};
+            }
+            response.body = std::move(compressed);
+        }
+        response.headers["Content-Encoding"] = "gzip";
+    } else {
+        std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+        if (!file) {
+            return error_response(500, "failed to open file", "internal_error");
+        }
+        const auto size = file.tellg();
+        response.body.resize(static_cast<size_t>(size));
+        file.seekg(0);
+        file.read(response.body.data(), size);
+    }
+
+    return response;
 }
 
 void ServerState::load_models() {

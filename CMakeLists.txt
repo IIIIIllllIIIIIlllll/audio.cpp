@@ -447,6 +447,10 @@ if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(engine_runtime PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+if (MSVC)
+    target_compile_options(engine_runtime PRIVATE /utf-8)
+endif()
+
 if (ENGINE_ENABLE_CUDA)
     target_sources(engine_runtime PRIVATE
         src/framework/audio/istft_cuda_runtime.cu
@@ -496,12 +500,37 @@ add_executable(audiocpp_server
     app/streaming/streaming.cpp
 )
 
+find_package(ZLIB QUIET)
+if (NOT ZLIB_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(zlib
+        URL https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz
+    )
+    FetchContent_MakeAvailable(zlib)
+endif()
+
 target_link_libraries(audiocpp_server PRIVATE engine_runtime ggml)
+if (TARGET ZLIB::ZLIB)
+    target_link_libraries(audiocpp_server PRIVATE ZLIB::ZLIB)
+elseif (TARGET zlibstatic)
+    target_link_libraries(audiocpp_server PRIVATE zlibstatic)
+    target_include_directories(audiocpp_server PRIVATE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
+else()
+    message(FATAL_ERROR "ZLIB not found and could not be built")
+endif()
 if (WIN32)
     target_link_libraries(audiocpp_server PRIVATE ws2_32)
 endif()
 if (ENGINE_ENABLE_OPENMP)
     target_link_libraries(audiocpp_server PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+if (EXISTS "${CMAKE_SOURCE_DIR}/web")
+    add_custom_command(TARGET audiocpp_server POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/web" "$<TARGET_FILE_DIR:audiocpp_server>/web"
+        COMMENT "Copying web/ assets to build output"
+    )
 endif()
 
 add_executable(model_perf

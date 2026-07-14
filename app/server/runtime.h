@@ -72,12 +72,21 @@ private:
     HttpResponse handle_generic_run(const std::string & body_text);
     HttpResponse handle_generic_stream(const std::string & body_text);
     HttpResponse handle_voices(const HttpRequest & request) const;
+    HttpResponse handle_options() const;
+    HttpResponse handle_static(const HttpRequest & request);
     std::string models_json() const;
+
+    struct GzipCacheEntry {
+        std::string data;
+        std::filesystem::file_time_type mtime;
+    };      
 
     ServerConfig config_;
     std::filesystem::path request_base_;
     std::vector<std::unique_ptr<LoadedModel>> models_;
     std::unordered_map<std::string, size_t> model_index_;
+    mutable std::mutex gzip_cache_mutex_;
+    std::unordered_map<std::string, GzipCacheEntry> gzip_cache_;
 };
 
 }  // namespace minitts::server

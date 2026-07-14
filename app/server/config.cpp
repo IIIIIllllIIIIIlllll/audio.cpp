@@ -5,6 +5,7 @@
 
 #include "engine/framework/io/json.h"
 
+#include <iostream>
 #include <stdexcept>
 #include <utility>
 
@@ -62,6 +63,7 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
     config.device = engine::io::json::optional_i32(root, "device", config.device);
     config.threads = engine::io::json::optional_i32(root, "threads", config.threads);
     config.lazy_load = engine::io::json::optional_bool(root, "lazy_load", config.lazy_load);
+    config.web_root = resolve_path(base, engine::io::json::optional_string(root, "web_root", ""));
     if (config.port <= 0 || config.port > 65535) {
         throw std::runtime_error("server port must be in 1..65535");
     }
@@ -71,7 +73,8 @@ ServerConfig load_server_config(const std::filesystem::path & path) {
 
     const auto * models = root.find("models");
     if (models == nullptr || !models->is_array() || models->as_array().empty()) {
-        throw std::runtime_error("server config requires a non-empty models array");
+        std::cerr << "Warning: no models configured, API endpoints will not be available\n";
+        return config;
     }
     for (const auto & item : models->as_array()) {
         ServerModelConfig model;

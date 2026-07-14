@@ -61,6 +61,8 @@ const char * status_text(int status) noexcept {
         return "Bad Request";
     case 404:
         return "Not Found";
+    case 204:
+        return "No Content";
     case 405:
         return "Method Not Allowed";
     case 500:
@@ -225,7 +227,10 @@ std::string serialize_response(const HttpResponse & response) {
     out << "HTTP/1.1 " << response.status << " " << status_text(response.status) << "\r\n"
         << "Content-Type: " << response.content_type << "\r\n"
         << "Content-Length: " << response.body.size() << "\r\n"
-        << "Connection: close\r\n";
+        << "Connection: close\r\n"
+        << "Access-Control-Allow-Origin: *\r\n"
+        << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        << "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
     for (const auto & [key, value] : response.headers) {
         out << key << ": " << value << "\r\n";
     }
@@ -241,7 +246,10 @@ std::string serialize_stream_headers(const HttpResponse & response) {
         << "Content-Type: " << response.content_type << "\r\n"
         << "Transfer-Encoding: chunked\r\n"
         << "Cache-Control: no-cache\r\n"
-        << "Connection: close\r\n";
+        << "Connection: close\r\n"
+        << "Access-Control-Allow-Origin: *\r\n"
+        << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        << "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
     for (const auto & [key, value] : response.headers) {
         out << key << ": " << value << "\r\n";
     }

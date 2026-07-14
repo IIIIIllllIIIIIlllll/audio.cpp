@@ -39,6 +39,7 @@ struct ServerConfig {
     int device = 0;
     int threads = 1;
     bool lazy_load = false;
+    std::filesystem::path web_root;
     std::vector<ServerModelConfig> models;
 };
 
