@@ -1,0 +1,184 @@
+name: release-hip
+
+# Manual Windows HIP (ROCm) release for AMD GPUs.
+# Two packages per release, see docs/build/windows-hip-distribution.md:
+#   - ROCm 6.4 track: 8 GPU targets incl. gfx1102 (RX 7600) and gfx1103 (780M iGPU)
+#   - ROCm 7.1 track: 7 targets (7.1 ships no hipBLASLt kernels for gfx1102)
+# Each package bundles the ROCm runtime + math DLLs and the rocblas/hipblaslt
+# kernel libraries, so end users need no HIP SDK or driver-bundled ROCm runtime.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.2.0-hip (created if missing)"
+        required: true
+      prerelease:
+        description: "Mark as pre-release"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: windows-hip (${{ matrix.name }})
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rocm6.4
+            installer_version: "25.Q3"
+            installer_platform: "Win10-Win11"
+            rocm_path: 'C:\Program Files\AMD\ROCm\6.4'
+            gpu_targets: "gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201"
+            build_dir: 'build\hip'
+            runtime_dlls: "amdhip64_6.dll amd_comgr_2.dll hipblas.dll hipblaslt.dll rocblas.dll"
+          - name: rocm7.1
+            installer_version: "26.Q1"
+            installer_platform: "Win11"
+            rocm_path: 'C:\Program Files\AMD\ROCm\7.1'
+            gpu_targets: "gfx1100;gfx1101;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201"
+            build_dir: 'build\hip71'
+            runtime_dlls: "amdhip64_7.dll amd_comgr_3.dll libhipblas.dll libhipblaslt.dll rocblas.dll"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache ROCm installation
+        id: cache-rocm
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\AMD\ROCm
+          key: cache-gha-rocm-${{ matrix.installer_version }}-${{ runner.os }}
+
+      - name: Install HIP SDK
+        if: steps.cache-rocm.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-${{ matrix.installer_version }}-${{ matrix.installer_platform }}-For-HIP.exe"
+          Write-Host "Downloading AMD HIP SDK installer: $url"
+          Invoke-WebRequest -Uri $url -OutFile "${env:RUNNER_TEMP}\rocm-install.exe"
+          Write-Host "Installing AMD HIP SDK (silent)"
+          $proc = Start-Process "${env:RUNNER_TEMP}\rocm-install.exe" -ArgumentList '-install' -NoNewWindow -PassThru
+          $completed = $proc.WaitForExit(600000)
+          if (-not $completed) {
+              Write-Error "ROCm installation timed out after 10 minutes. Killing the process"
+              $proc.Kill()
+              exit 1
+          }
+          if ($proc.ExitCode -ne 0) {
+              Write-Error "ROCm installation failed with exit code $($proc.ExitCode)"
+              exit 1
+          }
+          Write-Host "Completed AMD HIP SDK installation"
+
+      - name: Verify ROCm
+        shell: pwsh
+        run: |
+          $clang = "${{ matrix.rocm_path }}\bin\clang.exe"
+          if (-not (Test-Path $clang)) {
+            Write-Error "ROCm not found at ${{ matrix.rocm_path }}"
+            exit 1
+          }
+          & $clang --version
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-2022-hip-${{ matrix.name }}
+          max-size: 2000M
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=14.44 || exit /b 1
+          rem ccache must hook in as compiler launcher: the build script passes absolute clang paths.
+          set CMAKE_C_COMPILER_LAUNCHER=ccache
+          set CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_hip.ps1 -RocmPath "${{ matrix.rocm_path }}" -BuildDir "${{ matrix.build_dir }}" -GpuTargets "${{ matrix.gpu_targets }}" -NoNativeCpu -DeploymentBuild -Target audiocpp_cli || exit /b 1
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_hip.ps1 -RocmPath "${{ matrix.rocm_path }}" -BuildDir "${{ matrix.build_dir }}" -GpuTargets "${{ matrix.gpu_targets }}" -NoNativeCpu -DeploymentBuild -Target audiocpp_server || exit /b 1
+
+      - name: Pack
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = "${{ matrix.build_dir }}\bin"
+          $rocmBin = "${{ matrix.rocm_path }}\bin"
+          $pkg = "audiocpp-bin-win-hip-${{ matrix.name }}-x64"
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+
+          # Executables
+          Copy-Item "$bin\audiocpp_cli.exe", "$bin\audiocpp_server.exe" $pkg
+
+          # ROCm runtime + math DLLs (new Adrenalin drivers no longer ship these)
+          foreach ($dll in "${{ matrix.runtime_dlls }}".Split(" ")) {
+            Copy-Item (Join-Path $rocmBin $dll) $pkg
+          }
+
+          # Kernel libraries; GEMM fails at runtime without these.
+          # Trim arches we do not ship (gfx906, gfx103x) but keep fallback files.
+          foreach ($lib in "rocblas", "hipblaslt") {
+            New-Item -ItemType Directory -Force "$pkg\$lib\library" | Out-Null
+            Copy-Item "$rocmBin\$lib\library\*" "$pkg\$lib\library\" -Recurse
+            Get-ChildItem "$pkg\$lib\library" -File |
+              Where-Object { $_.Name -match "gfx906|gfx103" } |
+              Remove-Item -Force
+          }
+
+          # MSVC CRT runtime
+          $crt = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT' |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          Copy-Item "$($crt.FullName)\msvcp140.dll", "$($crt.FullName)\vcruntime140.dll", "$($crt.FullName)\vcruntime140_1.dll" $pkg
+
+          # Per-track README (pwsh requires here-string lines at script column 0,
+          # which is this indent level after YAML strips the block scalar indent)
+          $readme = @"
+          audio.cpp Windows HIP package (${{ matrix.name }})
+          GPU targets: ${{ matrix.gpu_targets }}
+
+          No HIP SDK or extra runtime install is required; the ROCm runtime DLLs
+          and kernel libraries are bundled next to the executables.
+
+          - ROCm 6.4 package: use this if you have an RX 7600 (gfx1102).
+          - ROCm 7.1 package: for RDNA3/RDNA3.5/RDNA4 cards other than RX 7600.
+          - 780M / Strix Point iGPUs (gfx1103/gfx1150/gfx1151) work with either package.
+
+          Details: docs/build/windows-hip-distribution.md
+          "@
+          $readme | Out-File -Encoding utf8 "$pkg\README-HIP.txt"
+
+          7z a -snl "$pkg.zip" ".\$pkg\*"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiocpp-bin-win-hip-${{ matrix.name }}-x64.zip
+          path: audiocpp-bin-win-hip-${{ matrix.name }}-x64.zip
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: audiocpp-bin-win-hip-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }} (Windows HIP)
+          prerelease: ${{ inputs.prerelease }}
+          files: dist/*.zip

@@ -327,3 +327,31 @@ Server:
 - On memory-constrained iGPUs (780M, Strix Point/Halo), CUDA graphs are disabled by default to avoid `out of memory` during graph warmup. This is the correct default for a distribution package.
 - Redistribution: rocBLAS/hipBLASLt are MIT-licensed open source, but the Windows HIP SDK binaries are governed by the AMD EULA. Verify that the EULA permits redistributing the runtime DLLs with an application before publishing.
 - Packaging automation: `scripts/package_windows_prebuilt.ps1` currently supports only `cpu` and `cuda` packages; extending it with a `hip` package kind would automate the DLL/library collection steps above.
+
+---
+
+## 7. CI: `.github/workflows/release-hip.yml`
+
+The fork ships a manually-triggered (`workflow_dispatch`) workflow that builds and
+publishes both tracks in one run:
+
+- Matrix job `build` (windows-2022), one leg per track:
+  - `rocm6.4` — installs HIP SDK from `AMD-Software-PRO-Edition-25.Q3-Win10-Win11-For-HIP.exe`
+    (the ROCm 6.4 installer), builds the 8-target track into `build\hip`;
+  - `rocm7.1` — installs from `AMD-Software-PRO-Edition-26.Q1-Win11-For-HIP.exe`
+    (ROCm 7.1), builds the 7-target track into `build\hip71`.
+- The ROCm installation (`C:\Program Files\AMD\ROCm`) is cached between runs
+  (`actions/cache`, key includes the installer version); ccache caches compilation.
+- The build step enters the MSVC 14.44 toolset (`vcvarsall.bat x64 -vcvars_ver=14.44`)
+  and calls `scripts\build_windows_hip.ps1` with `-NoNativeCpu -DeploymentBuild`,
+  matching the local verified builds.
+- The pack step reproduces §2–§4: executables, runtime + math DLLs, both kernel
+  libraries (trimmed of gfx906/gfx103x kernels), MSVC CRT, and a per-track
+  `README-HIP.txt`. Products: `audiocpp-bin-win-hip-rocm6.4-x64.zip` and
+  `audiocpp-bin-win-hip-rocm7.1-x64.zip`.
+- A final `release` job publishes both zips to a GitHub Release under the tag
+  given at dispatch time (created if missing, marked pre-release by default).
+
+First run on a fresh runner installs the HIP SDK (~10 min) and compiles ~145 `.cu`
+files per target arch on 4 vCPUs — expect 2.5–4 hours per track leg; both legs run
+in parallel. Cached re-runs are much faster.
