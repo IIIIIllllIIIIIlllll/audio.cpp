@@ -444,7 +444,7 @@ audiocpp_cli --task tts --family index_tts2 --model /path/to/IndexTTS-2 --backen
 | `--session-option index_tts2.emotion_text_prefill_graph_arena_mb=<n>` | MB | model default | Emotion-text prefill graph arena size. |
 | `--session-option index_tts2.emotion_text_decode_graph_arena_mb=<n>` | MB | model default | Emotion-text cached-step graph arena size. |
 | `--session-option index_tts2.emotion_text_max_new_tokens=<n>` | tokens | `256` | Maximum generated tokens for emotion-text classification. |
-| `--session-option index_tts2.weight_context_mb=<n>` | MB | model default | Shared weight context size. |
+| `--session-option index_tts2.weight_context_mb=<n>` | MB | `32` | Shared ggml weight metadata context size. |
 
 ## Irodori-TTS
 

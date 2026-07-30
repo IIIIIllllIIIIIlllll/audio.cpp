@@ -279,6 +279,7 @@ add_library(engine_core OBJECT
     src/framework/modules/vocoders/hift_vocoder.cpp
     src/framework/modules/speech_encoders/hubert_encoder.cpp
     src/framework/modules/speech_encoders/wavlm_encoder.cpp
+    src/framework/modules/speech_encoders/sanm.cpp
     src/framework/modules/optimizations/fast_conv_modules.cpp
     src/framework/modules/optimizations/fast_projection_modules.cpp
     src/framework/modules/recurrent_modules.cpp
@@ -311,6 +312,7 @@ add_library(engine_core OBJECT
     external/llama_tokenizer/unicode-data.cpp
     src/framework/tokenizers/sentencepiece.cpp
     src/framework/audio/fft.cpp
+    src/framework/audio/kaldi_fbank.cpp
     src/framework/audio/activity.cpp
     src/framework/audio/chunking.cpp
     src/framework/audio/conversion.cpp
@@ -687,6 +689,23 @@ audiocpp_add_model(dramabox
         engine/models/dramabox/loader.h
     LOADERS
         engine::models::dramabox::make_dramabox_loader
+)
+
+audiocpp_add_model(fun_asr_nano
+    SOURCES
+        src/models/fun_asr_nano/assets.cpp
+        src/models/fun_asr_nano/frontend.cpp
+        src/models/fun_asr_nano/encoder.cpp
+        src/models/fun_asr_nano/adaptor.cpp
+        src/models/fun_asr_nano/tokenizer_text.cpp
+        src/models/fun_asr_nano/prompt.cpp
+        src/models/fun_asr_nano/decoder.cpp
+        src/models/fun_asr_nano/session.cpp
+        src/models/fun_asr_nano/loader.cpp
+    INCLUDES
+        engine/models/fun_asr_nano/loader.h
+    LOADERS
+        engine::models::fun_asr_nano::make_fun_asr_nano_loader
 )
 
 audiocpp_add_model(heartmula
@@ -1330,6 +1349,7 @@ if (ENGINE_BUILD_WARMBENCH)
     add_engine_warmbench(citrinet_asr_warm_bench tests/citrinet_asr/citrinet_asr_warm_bench.cpp)
     add_engine_warmbench(confucius4_tts_warm_bench tests/confucius4_tts/confucius4_tts_warm_bench.cpp)
     add_engine_warmbench(dramabox_warm_bench tools/dramabox/dramabox_warm_bench.cpp)
+    add_engine_warmbench(fun_asr_nano_warm_bench tests/fun_asr_nano/fun_asr_nano_warm_bench.cpp)
     add_engine_warmbench(higgs_audio_stt_warm_bench tests/higgs_audio_stt/higgs_audio_stt_warm_bench.cpp)
     add_engine_warmbench(higgs_audio_tts_warm_bench tests/higgs_audio_tts/higgs_audio_tts_warm_bench.cpp)
     add_engine_warmbench(hviske_asr_warm_bench tests/hviske_asr/hviske_asr_warm_bench.cpp)
@@ -1665,6 +1685,214 @@ if (ENGINE_BUILD_TESTS)
         NAME model_spec_system_test
         COMMAND model_spec_system_test
     )
+
+    add_engine_unittest(fun_asr_nano_assets_test tests/unittests/test_fun_asr_nano_assets.cpp)
+    target_sources(fun_asr_nano_assets_test PRIVATE src/models/fun_asr_nano/assets.cpp)
+    target_include_directories(fun_asr_nano_assets_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+
+    add_test(
+        NAME fun_asr_nano_assets_test
+        COMMAND fun_asr_nano_assets_test
+    )
+
+    add_engine_unittest(fun_asr_nano_frontend_probe tests/fun_asr_nano/fun_asr_nano_frontend_probe.cpp)
+
+    add_test(
+        NAME fun_asr_nano_frontend_probe
+        COMMAND fun_asr_nano_frontend_probe
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/frontend_reference.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/frontend_reference.bin
+            ${CMAKE_CURRENT_SOURCE_DIR}/assets/resources/sample_16k.wav
+    )
+
+    add_engine_unittest(fun_asr_nano_sanm_probe tests/fun_asr_nano/sanm_probe.cpp)
+
+    add_test(
+        NAME fun_asr_nano_sanm_probe
+        COMMAND fun_asr_nano_sanm_probe
+            --backend cpu
+            --reference ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/sanm_reference.json
+            --data ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/sanm_reference.bin
+    )
+
+    add_engine_unittest(fun_asr_nano_encoder_probe tests/fun_asr_nano/fun_asr_nano_encoder_probe.cpp)
+    target_sources(
+        fun_asr_nano_encoder_probe
+        PRIVATE
+            src/models/fun_asr_nano/assets.cpp
+            src/models/fun_asr_nano/frontend.cpp
+            src/models/fun_asr_nano/encoder.cpp
+    )
+    set(
+        AUDIOCPP_FUN_ASR_NANO_TEST_MODEL
+        ""
+        CACHE PATH
+        "Optional local Fun-ASR-Nano model directory for full runtime parity tests"
+    )
+    set(
+        AUDIOCPP_FUN_ASR_NANO_TEST_GGUF
+        ""
+        CACHE FILEPATH
+        "Optional standalone Fun-ASR-Nano GGUF for full CLI transcript tests"
+    )
+    if (AUDIOCPP_FUN_ASR_NANO_TEST_MODEL)
+        add_test(
+            NAME fun_asr_nano_encoder_probe_cpu
+            COMMAND fun_asr_nano_encoder_probe
+                --backend cpu
+                --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                --reference ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/encoder_reference.json
+                --data ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/encoder_reference.bin
+        )
+        if (GGML_CUDA)
+            add_test(
+                NAME fun_asr_nano_encoder_probe_cuda
+                COMMAND fun_asr_nano_encoder_probe
+                    --backend cuda
+                    --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                    --reference ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/encoder_reference.json
+                    --data ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/encoder_reference.bin
+            )
+        endif()
+
+        add_engine_unittest(fun_asr_nano_session_probe tests/fun_asr_nano/fun_asr_nano_session_probe.cpp)
+        add_test(
+            NAME fun_asr_nano_session_probe_cpu
+            COMMAND fun_asr_nano_session_probe
+                --backend cpu
+                --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                --audio ${CMAKE_CURRENT_SOURCE_DIR}/assets/resources/sample_16k.wav
+        )
+        if (GGML_CUDA)
+            add_test(
+                NAME fun_asr_nano_session_probe_cuda
+                COMMAND fun_asr_nano_session_probe
+                    --backend cuda
+                    --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                    --audio ${CMAKE_CURRENT_SOURCE_DIR}/assets/resources/sample_16k.wav
+            )
+        endif()
+    endif()
+    if (AUDIOCPP_FUN_ASR_NANO_TEST_GGUF)
+        add_test(
+            NAME fun_asr_nano_gguf_cli_cpu
+            COMMAND audiocpp_cli
+                --task asr
+                --family fun_asr_nano
+                --model ${AUDIOCPP_FUN_ASR_NANO_TEST_GGUF}
+                --backend cpu
+                --audio ${CMAKE_CURRENT_SOURCE_DIR}/assets/resources/sample_16k.wav
+        )
+        set_tests_properties(
+            fun_asr_nano_gguf_cli_cpu
+            PROPERTIES PASS_REGULAR_EXPRESSION
+                "text_output=Some call me nature, others call me mother nature"
+        )
+        if (GGML_CUDA)
+            add_test(
+                NAME fun_asr_nano_gguf_cli_cuda
+                COMMAND audiocpp_cli
+                    --task asr
+                    --family fun_asr_nano
+                    --model ${AUDIOCPP_FUN_ASR_NANO_TEST_GGUF}
+                    --backend cuda
+                    --audio ${CMAKE_CURRENT_SOURCE_DIR}/assets/resources/sample_16k.wav
+            )
+            set_tests_properties(
+                fun_asr_nano_gguf_cli_cuda
+                PROPERTIES PASS_REGULAR_EXPRESSION
+                    "text_output=Some call me nature, others call me mother nature"
+            )
+            add_test(
+                NAME fun_asr_nano_gguf_cli_cuda_shared_q8
+                COMMAND audiocpp_cli
+                    --task asr
+                    --family fun_asr_nano
+                    --model ${AUDIOCPP_FUN_ASR_NANO_TEST_GGUF}
+                    --backend cuda
+                    --session-option fun_asr_nano.weight_type=q8_0
+                    --audio ${CMAKE_CURRENT_SOURCE_DIR}/assets/resources/sample_16k.wav
+            )
+            set_tests_properties(
+                fun_asr_nano_gguf_cli_cuda_shared_q8
+                PROPERTIES PASS_REGULAR_EXPRESSION
+                    "text_output=Some call me nature, others call me mother nature"
+            )
+            add_test(
+                NAME fun_asr_nano_gguf_cli_best_shared_q8
+                COMMAND audiocpp_cli
+                    --task asr
+                    --family fun_asr_nano
+                    --model ${AUDIOCPP_FUN_ASR_NANO_TEST_GGUF}
+                    --backend best
+                    --session-option fun_asr_nano.weight_type=q8_0
+                    --audio ${CMAKE_CURRENT_SOURCE_DIR}/assets/resources/sample_16k.wav
+            )
+            set_tests_properties(
+                fun_asr_nano_gguf_cli_best_shared_q8
+                PROPERTIES PASS_REGULAR_EXPRESSION
+                    "text_output=Some call me nature, others call me mother nature"
+            )
+        endif()
+    endif()
+
+    add_engine_unittest(fun_asr_nano_adaptor_probe tests/fun_asr_nano/fun_asr_nano_adaptor_probe.cpp)
+    target_sources(
+        fun_asr_nano_adaptor_probe
+        PRIVATE
+            src/models/fun_asr_nano/assets.cpp
+            src/models/fun_asr_nano/adaptor.cpp
+    )
+    if (AUDIOCPP_FUN_ASR_NANO_TEST_MODEL)
+        add_test(
+            NAME fun_asr_nano_adaptor_probe_cpu
+            COMMAND fun_asr_nano_adaptor_probe
+                --backend cpu
+                --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                --reference ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/adaptor_reference.json
+                --data ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/adaptor_reference.bin
+        )
+        if (GGML_CUDA)
+            add_test(
+                NAME fun_asr_nano_adaptor_probe_cuda
+                COMMAND fun_asr_nano_adaptor_probe
+                    --backend cuda
+                    --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                    --reference ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/adaptor_reference.json
+                    --data ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/adaptor_reference.bin
+            )
+        endif()
+    endif()
+
+    add_engine_unittest(fun_asr_nano_decoder_probe tests/fun_asr_nano/fun_asr_nano_decoder_probe.cpp)
+    target_sources(
+        fun_asr_nano_decoder_probe
+        PRIVATE
+            src/models/fun_asr_nano/assets.cpp
+            src/models/fun_asr_nano/tokenizer_text.cpp
+            src/models/fun_asr_nano/prompt.cpp
+            src/models/fun_asr_nano/decoder.cpp
+    )
+    if (AUDIOCPP_FUN_ASR_NANO_TEST_MODEL)
+        add_test(
+            NAME fun_asr_nano_decoder_probe_cpu
+            COMMAND fun_asr_nano_decoder_probe
+                --backend cpu
+                --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                --reference ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/decoder_reference.json
+                --data ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/decoder_reference.bin
+        )
+        if (GGML_CUDA)
+            add_test(
+                NAME fun_asr_nano_decoder_probe_cuda
+                COMMAND fun_asr_nano_decoder_probe
+                    --backend cuda
+                    --model ${AUDIOCPP_FUN_ASR_NANO_TEST_MODEL}
+                    --reference ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/decoder_reference.json
+                    --data ${CMAKE_CURRENT_SOURCE_DIR}/tests/fun_asr_nano/decoder_reference.bin
+            )
+        endif()
+    endif()
 
     add_engine_unittest(tdt_decoder_duration_loop_test tests/unittests/test_tdt_decoder_duration_loop.cpp)
     target_include_directories(tdt_decoder_duration_loop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
