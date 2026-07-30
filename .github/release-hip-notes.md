@@ -38,6 +38,11 @@ path. If GPU initialization fails, update your AMD driver first.
 
 ## Notes
 
+- **Versioning**: HIP releases are versioned to match the upstream audio.cpp
+  Windows releases (e.g. this `v0.4.3` corresponds to upstream `release-0.4.3`),
+  built from the fork's `main` synced to upstream at release time. For CPU/CUDA
+  packages and the upstream release history, see
+  <https://github.com/0xShug0/audio.cpp/releases>.
 - Built on GitHub Actions from this fork's `main` (workflow:
   `.github/workflows/release-hip.yml`); see
   `docs/build/windows-hip-distribution.md` for the full build/packaging story.
