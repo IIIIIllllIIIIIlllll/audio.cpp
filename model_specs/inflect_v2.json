@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "family": "inflect_v2",
-  "display_name": "Inflect Micro v2 / Nano v2",
+  "display_name": "Inflect Micro v2",
   "description": "Compact English VITS text-to-speech models with a native GGML inference path and an external eSpeak-ng phonemizer.",
   "category": "tts",
   "status": "community",
@@ -87,44 +87,31 @@
     ],
     "load": []
   },
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
   "packages": [
     {
-      "id": "inflect_micro_v2",
-      "display_name": "Inflect Micro v2 FP32",
+      "id": "inflect_micro_v2_orig",
+      "display_name": "Inflect Micro v2 Original-Dtype GGUF",
       "default": true,
-      "format": "safetensors",
-      "precision": "f32",
-      "target_directory": "Inflect-Micro-v2",
+      "format": "gguf",
+      "precision": "orig",
+      "target_directory": "Inflect-Micro-v2-GGUF",
       "files": [
-        "config.json",
-        "model.safetensors"
+        "Inflect-Micro-v2-GGUF/inflect-micro-v2-orig.gguf"
       ],
-      "download": {
-        "kind": "converter",
-        "converter": "tools/model_manager.py install inflect_micro_v2",
-        "description": "Download the pinned official ONNX snapshot and convert it locally without PyTorch."
-      }
-    },
-    {
-      "id": "inflect_nano_v2",
-      "display_name": "Inflect Nano v2 FP32",
-      "format": "safetensors",
-      "precision": "f32",
-      "target_directory": "Inflect-Nano-v2",
-      "files": [
-        "config.json",
-        "model.safetensors"
-      ],
-      "download": {
-        "kind": "converter",
-        "converter": "tools/model_manager.py install inflect_nano_v2",
-        "description": "Download the pinned official ONNX snapshot and convert it locally without PyTorch."
-      }
+      "strip_prefix": "Inflect-Micro-v2-GGUF"
     }
   ],
   "dependencies": [],
   "ui": {
-    "recommended_package": "inflect_micro_v2",
+    "recommended_package": "inflect_micro_v2_orig",
     "tags": [
       "TTS",
       "GGUF"

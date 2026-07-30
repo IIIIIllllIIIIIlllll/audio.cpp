@@ -441,6 +441,92 @@
       ]
     },
     {
+      "id": "confucius4_tts_multi_request_logic_paths",
+      "coverage": "Confucius4-TTS multi-request session with same-language clone, cross-language clone, and reference voice switching",
+      "family": "confucius4_tts",
+      "model": "models/Confucius4-TTS-GGUF/confucius4-tts-orig.gguf",
+      "task": "clon",
+      "mode": "offline",
+      "outputs": [
+        "audio"
+      ],
+      "requests": [
+        {
+          "id": "session_same_language_sample_reference",
+          "language": "en",
+          "voice_ref": "resources/sample.wav",
+          "text": "The narrator should keep a steady pace while explaining that the archive was checked twice, the missing labels were restored, and the final audio report now matches the production notes exactly.",
+          "seed": 4301
+        },
+        {
+          "id": "session_cross_language_male_reference",
+          "language": "zh",
+          "voice_ref": "reference/HiggsAudioV3TTS/sglang-omni/docs/_static/audio/male-voice.wav",
+          "text": "请用清晰自然的语气朗读这段内容：实验室已经完成新的压力测试，服务器日志显示缓存命中率稳定提高，负责人要求在交付之前再次确认长文本合成和跨语言克隆路径都没有退化，并记录不同参考声音在同一会话中的切换情况。",
+          "seed": 4302
+        },
+        {
+          "id": "session_cross_language_female_reference",
+          "language": "ja",
+          "voice_ref": "reference/HiggsAudioV3TTS/sglang-omni/docs/_static/audio/female-voice.wav",
+          "text": "今朝の確認では、音声クローニングの品質、長い文章の区切り処理、そして別の言語で話す場合の声の安定性を順番に確認しました。担当者は結果を記録し、参考音声を切り替えた後も出力が自然に続くかを確認してから、次の検証に進みます。",
+          "seed": 4303
+        }
+      ]
+    },
+    {
+      "id": "confucius4_tts_multi_request_logic_paths_single_beam",
+      "coverage": "Confucius4-TTS deterministic single-beam multi-request session with same-language clone, cross-language clone, and reference voice switching",
+      "family": "confucius4_tts",
+      "model": "models/Confucius4-TTS-GGUF/confucius4-tts-orig.gguf",
+      "task": "clon",
+      "mode": "offline",
+      "outputs": [
+        "audio"
+      ],
+      "requests": [
+        {
+          "id": "session_same_language_sample_reference_single_beam",
+          "language": "en",
+          "voice_ref": "resources/sample.wav",
+          "text": "The narrator should keep a steady pace while explaining that the archive was checked twice, the missing labels were restored, and the final audio report now matches the production notes exactly.",
+          "seed": 4301,
+          "top_k": 1,
+          "top_p": 1.0,
+          "temperature": 1.0,
+          "options": {
+            "num_beams": 1
+          }
+        },
+        {
+          "id": "session_cross_language_male_reference_single_beam",
+          "language": "zh",
+          "voice_ref": "reference/HiggsAudioV3TTS/sglang-omni/docs/_static/audio/male-voice.wav",
+          "text": "请用清晰自然的语气朗读这段内容：实验室已经完成新的压力测试，服务器日志显示缓存命中率稳定提高，负责人要求在交付之前再次确认长文本合成和跨语言克隆路径都没有退化，并记录不同参考声音在同一会话中的切换情况。",
+          "seed": 4302,
+          "top_k": 1,
+          "top_p": 1.0,
+          "temperature": 1.0,
+          "options": {
+            "num_beams": 1
+          }
+        },
+        {
+          "id": "session_cross_language_female_reference_single_beam",
+          "language": "ja",
+          "voice_ref": "reference/HiggsAudioV3TTS/sglang-omni/docs/_static/audio/female-voice.wav",
+          "text": "今朝の確認では、音声クローニングの品質、長い文章の区切り処理、そして別の言語で話す場合の声の安定性を順番に確認しました。担当者は結果を記録し、参考音声を切り替えた後も出力が自然に続くかを確認してから、次の検証に進みます。",
+          "seed": 4303,
+          "top_k": 1,
+          "top_p": 1.0,
+          "temperature": 1.0,
+          "options": {
+            "num_beams": 1
+          }
+        }
+      ]
+    },
+    {
       "id": "miocodec_voice_conversion",
       "coverage": "MioCodec voice conversion path, WavLM feature extraction, content/global encoders, wave decoder, and waveform reconstruction",
       "family": "miocodec",
@@ -939,16 +1025,16 @@
           "id": "default_no_index",
           "audio": "resources/sample_16k.wav",
           "options": {
-            "rvc.voice": "default",
-            "rvc.index_rate": 0.0
+            "voice_id": "default",
+            "retrieval_blend": 0.0
           }
         },
         {
           "id": "default_indexed",
           "audio": "resources/sample_16k.wav",
           "options": {
-            "rvc.voice": "default",
-            "rvc.index_rate": 0.5
+            "voice_id": "default",
+            "retrieval_blend": 0.5
           }
         }
       ]
@@ -1657,6 +1743,51 @@
       ]
     },
     {
+      "id": "kroko_asr_en_q8_offline_words",
+      "coverage": "Kroko ASR English Q8 GGUF offline RNN-T decode with word timestamps",
+      "family": "kroko_asr",
+      "model": "models/Kroko-ASR-GGUF/kroko-en-community-64-l-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline",
+      "outputs": [
+        "text",
+        "words"
+      ],
+      "requests": [
+        {
+          "id": "sample_en_words",
+          "audio": "resources/sample_16k.wav",
+          "language": "en"
+        }
+      ]
+    },
+    {
+      "id": "fun_asr_nano_offline",
+      "coverage": "Fun-ASR-Nano Q8 GGUF offline English ASR warm-session path",
+      "family": "fun_asr_nano",
+      "model": "models/Fun-ASR-Nano-2512-GGUF/fun-asr-nano-2512-q8_0.gguf",
+      "task": "asr",
+      "mode": "offline",
+      "outputs": [
+        "text"
+      ],
+      "requests": [
+        {
+          "id": "warmup_design_short",
+          "audio": "resources/design.wav"
+        },
+        {
+          "id": "nature_sample_16k_en_itn_off",
+          "audio": "resources/sample_16k.wav",
+          "language": "en",
+          "options": {
+            "enable_itn": false,
+            "max_tokens": 128
+          }
+        }
+      ]
+    },
+    {
       "id": "parakeet_tdt_offline_long",
       "coverage": "Parakeet offline pre-encode, long-context encoder, TDT decoder",
       "family": "parakeet_tdt",
@@ -2236,13 +2367,11 @@
           "text": "A woman speaks warmly, \"Hello, how are you today?\" She laughs softly, \"Hahaha, it is so good to see you again.\"",
           "voice_ref": "reference/DramaBox/assets/voices/female_american.wav",
           "options": {
-            "cfg_scale": 2.5,
-            "stg_scale": 1.5,
-            "duration_multiplier": 1.1,
-            "ref_duration": 10.0,
-            "rescale_scale": "auto",
-            "watermark": false,
-            "denoise_ref": false
+            "guidance_scale": 2.5,
+            "spatio_temporal_guidance_scale": 1.5,
+            "duration_scale": 1.1,
+            "reference_duration_sec": 10.0,
+            "guidance_rescale": "auto"
           },
           "seed": 52
         }
@@ -2264,13 +2393,11 @@
           "text": "A woman says warmly, \"Hello.\"",
           "voice_ref": "reference/DramaBox/assets/voices/female_american.wav",
           "options": {
-            "cfg_scale": 2.5,
-            "stg_scale": 1.5,
-            "duration_multiplier": 1.1,
-            "ref_duration": 10.0,
-            "rescale_scale": "auto",
-            "watermark": false,
-            "denoise_ref": false
+            "guidance_scale": 2.5,
+            "spatio_temporal_guidance_scale": 1.5,
+            "duration_scale": 1.1,
+            "reference_duration_sec": 10.0,
+            "guidance_rescale": "auto"
           },
           "seed": 52
         },
@@ -2279,13 +2406,11 @@
           "text": "A woman speaks warmly, \"Hello, how are you today?\" She laughs softly, \"Hahaha, it is so good to see you again.\"",
           "voice_ref": "reference/DramaBox/assets/voices/female_american.wav",
           "options": {
-            "cfg_scale": 2.5,
-            "stg_scale": 1.5,
-            "duration_multiplier": 1.1,
-            "ref_duration": 10.0,
-            "rescale_scale": "auto",
-            "watermark": false,
-            "denoise_ref": false
+            "guidance_scale": 2.5,
+            "spatio_temporal_guidance_scale": 1.5,
+            "duration_scale": 1.1,
+            "reference_duration_sec": 10.0,
+            "guidance_rescale": "auto"
           },
           "seed": 52
         }

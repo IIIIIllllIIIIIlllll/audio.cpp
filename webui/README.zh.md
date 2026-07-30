@@ -69,7 +69,7 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
   里的 **id** 来指定模型，并自动查出它的 `family` / `task` / 绝对路径，你不用再手写这些。
   当前已安装的 id：`qwen3-tts`、`qwen3-asr`、`vibevoice`、`omnivoice`、`pocket-tts`。
   未安装的 id 会提示 “not installed”，可在 WebUI 里下载，或用
-  `python tools/model_manager.py install <download_id>` 安装（见 `models_catalog.json`）。
+  `python webui/model_manager_webui.py install <download_id>` 安装（包信息来自 `model_specs/`）。
 - **后端自动选择：** 检测到 CUDA（NVIDIA 驱动）就用 GPU，否则回退 CPU。
   想强制某个后端，设环境变量 `AUDIOCPP_BACKEND=gpu`（=cuda）、`AUDIOCPP_BACKEND=cpu` 或
   `AUDIOCPP_BACKEND=metal`。
@@ -106,8 +106,8 @@ python3 -m venv venv && ./venv/bin/pip install -r webui/requirements.txt
   **✖️ 取消** 两个按钮。不点确认就不会下载任何东西；切换所选模型会自动收起确认按钮。对尚未下载的模型点
   「📊 下载进度」也会显示同样的信息，方便只看不下。显存估算在 CPU 后端下同样显示（并标注 CPU 后端跑在
   系统内存里）；只有“显存不足”**警告**在 CPU 模式下保持静默，因为没有显存可谈。`models/` 所在分区装不
-  下时直接拒绝（不给出确认按钮）；装得下但下完剩余不足 20 GB 会提醒，但仍允许下载。转换类安装、以及未
-  提供 token 的受限仓库无法取得体积，这类下载行为与以前一致。
+  下时直接拒绝（不给出确认按钮）；装得下但下完剩余不足 20 GB 会提醒，但仍允许下载。未提供 token 的受限
+  仓库无法取得体积，这类下载行为与以前一致。
 - **下载过程中**进度按整包体积显示（如「已下载 5.00 GB / 17.00 GB（29%）」），显存不足与磁盘不足的提醒
   每次刷新都会重新显示，不会只闪一下就被进度覆盖。磁盘判断按**剩余待下载**的字节数计算，因此正常下载
   不会随着可用空间减少而误报。下载完成后显存提醒仍然保留——它决定模型能不能跑，而不是能不能下完。
@@ -212,8 +212,7 @@ TTS 标签页「合成设置 → 高级参数」里的控件由 **`configs/model
 
 **Vevo2（语音转换）**：三个 Vevo2 条目改为下载自包含的 Q8_0 GGUF 包（`vevo2_gguf` → `models/Vevo2-GGUF`，
 约 3.2 GB），不再需要额外下载同级的 `whisper-medium`。此前装在 `models/Vevo2` 的 safetensors 版本不再是这些
-条目指向的目录；它仍可用 CLI `--model models/Vevo2` 加载，或用
-`python3 tools/model_manager.py install vevo2` 重新安装。
+条目指向的目录；它仍可用 CLI `--model models/Vevo2` 加载。WebUI 下载会安装 GGUF 包。
 Vevo2 默认 `route=style_preserved_vc`（保留源语音的说话风格，只换音色）。
 `route` 留空按条目任务默认（vc→style_preserved_vc，svc→style_preserved_svc，s2s→editing），
 且须与所选条目任务匹配；`style_converted_*` / `editing` 需在「其它参数(JSON)」里补
@@ -251,24 +250,14 @@ singing 路线默认开，style_converted_vc / editing 默认关。
   高级参数选 `voice`（M1-M5 男 / F1-F5 女）和 `speaking_rate`；不支持参考音频克隆。
 - **模型下载**在后台进行，进度自动刷新，也可点「📊 下载进度」手动查看。
 
-### GGUF 转换、检查与加载
+### GGUF 检查与加载
 
-每个任务页的「模型管理」卡片都提供同一组 GGUF 操作：选择类型（默认 `q8_0`）后点「🧊 转换 GGUF」，
-会把结果写为所选模型目录下的 `model.gguf`；已有文件不会被覆盖。点「🔎 检查 GGUF」会在页面上执行
+每个任务页的「模型管理」卡片都可以检查所选 GGUF 包。点「🔎 检查 GGUF」会在页面上执行
 `audiocpp_gguf.exe --inspect` 并显示包的元数据。对已接入原生 GGUF 的模型，普通「📥 加载模型」会自动优先
 使用模型目录里的 GGUF：优先 `model.gguf`，否则取目录里唯一的 `*.gguf`，因此下载的模型包可以保留其发布名
 （如 `vevo2-q8_0.gguf`）而无需改名；目录里有多个 GGUF 且没有 `model.gguf` 时无法判定，页面与 server 都不会
-擅自选一个。点「🗑️ 删除 GGUF」会删除转换产物（以及同名残留 `.tmp`），下次普通加载即恢复原始权重；若该
-GGUF 本身就是下载的模型包，则不会删除，请改用模型列表重新下载/删除。
-
-- 转换器按顺序查找开发构建的 `build\windows-cuda-release\bin` / `build\windows-cpu-release\bin`，以及整合包的
-  `audiocpp-portable\gpu` / `audiocpp-portable\cpu`；也可用 `AUDIOCPP_GGUF` 指向自定义 `audiocpp_gguf.exe`。
-- 页面只会把已接入原生 GGUF 模型规格、且能明确整理转换输入的模型标为「可转换」；存在 `.safetensors` 不代表对应
-  C++ 后端已支持 GGUF。支持转换但尚未完整安装的模型会提前显示「可转换，但模型未完整安装」，便于下载前判断；
-  Stable Audio 当前仍使用原始权重，不会标为可转换。
-- 页面自动处理受支持的单个 `model.safetensors`、分片索引和 Qwen3-TTS 复合权重。其他需要多个命名
-  `--input namespace=...` 的复合模型仍应使用命令行，避免 UI 猜错权重命名空间。
-- 仅 audio.cpp-native GGUF 可加载；量化兼容性因模型和推理路线而异。转换成功也应先用短样本检查输出质量。
+擅自选一个。WebUI 不再转换 safetensors；下载会安装 `model_specs/` 声明的默认 GGUF 包。已经存在的
+legacy/safetensors 模型目录仍可按 catalog 路径加载。
 
 ---
 
@@ -292,7 +281,7 @@ GGUF 本身就是下载的模型包，则不会删除，请改用模型列表重
 | `supertonic` | supertonic | tts | Supertonic 3（预置音色，无中文） |
 
 未安装的 id 运行时会提示，可在 WebUI 里点“下载”，或
-`python tools\model_manager.py install <download_id> --models-root <bundle>\models`。
+`python webui\model_manager_webui.py install <download_id> --models-root <bundle>\models`。
 
 ---
 

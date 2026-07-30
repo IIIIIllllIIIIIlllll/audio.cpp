@@ -351,7 +351,7 @@ core::TensorValue attention(
     const core::TensorValue & input,
     int layer) {
     const std::string prefix =
-        "model.enc_p.encoder.attn_layers." + std::to_string(layer);
+        "enc_p.encoder.attn_layers." + std::to_string(layer);
     const int64_t channels = config.hidden_channels;
     const int64_t heads = config.attention_heads;
     const int64_t key_channels = channels / heads;
@@ -428,7 +428,7 @@ core::TensorValue text_encoder(
     }).build(
         ctx,
         tokens,
-        weight(weights, "model.enc_p.emb.weight"));
+        weight(weights, "enc_p.emb.weight"));
     embedded = scaled(
         ctx,
         embedded,
@@ -440,12 +440,12 @@ core::TensorValue text_encoder(
             ctx,
             weights,
             add(ctx, hidden, attention(ctx, weights, config, hidden, layer)),
-            "model.enc_p.encoder.norm_layers_1." + std::to_string(layer));
+            "enc_p.encoder.norm_layers_1." + std::to_string(layer));
         auto ffn = conv1d(
             ctx,
             weights,
             hidden,
-            "model.enc_p.encoder.ffn_layers." + std::to_string(layer) + ".conv_1",
+            "enc_p.encoder.ffn_layers." + std::to_string(layer) + ".conv_1",
             config.filter_channels,
             3,
             1);
@@ -454,7 +454,7 @@ core::TensorValue text_encoder(
             ctx,
             weights,
             ffn,
-            "model.enc_p.encoder.ffn_layers." + std::to_string(layer) + ".conv_2",
+            "enc_p.encoder.ffn_layers." + std::to_string(layer) + ".conv_2",
             config.hidden_channels,
             3,
             1);
@@ -462,7 +462,7 @@ core::TensorValue text_encoder(
             ctx,
             weights,
             add(ctx, hidden, ffn),
-            "model.enc_p.encoder.norm_layers_2." + std::to_string(layer));
+            "enc_p.encoder.norm_layers_2." + std::to_string(layer));
     }
     return hidden;
 }
@@ -476,23 +476,23 @@ core::TensorValue duration_predictor(
         ctx,
         weights,
         hidden,
-        "model.dp.conv_1",
+        "dp.conv_1",
         config.duration_channels,
         3,
         1);
     value = modules::ReluModule().build(ctx, value);
-    value = channel_layer_norm(ctx, weights, value, "model.dp.norm_1");
+    value = channel_layer_norm(ctx, weights, value, "dp.norm_1");
     value = conv1d(
         ctx,
         weights,
         value,
-        "model.dp.conv_2",
+        "dp.conv_2",
         config.duration_channels,
         3,
         1);
     value = modules::ReluModule().build(ctx, value);
-    value = channel_layer_norm(ctx, weights, value, "model.dp.norm_2");
-    return conv1d(ctx, weights, value, "model.dp.proj", 1, 1, 0);
+    value = channel_layer_norm(ctx, weights, value, "dp.norm_2");
+    return conv1d(ctx, weights, value, "dp.proj", 1, 1, 0);
 }
 
 core::TensorValue flip_channels(
@@ -588,7 +588,7 @@ core::TensorValue reverse_flow(
     for (int flow = static_cast<int>(config.flow_count) - 1; flow >= 0; --flow) {
         input = flip_channels(ctx, input, reverse_indices);
         const std::string prefix =
-            "model.flow.flows." + std::to_string(flow * 2);
+            "flow.flows." + std::to_string(flow * 2);
         const auto x0 =
             modules::SliceModule({1, 0, half}).build(ctx, input);
         auto x1 =
@@ -751,7 +751,7 @@ core::TensorValue decoder(
         ctx,
         weights,
         latent,
-        "model.dec.conv_pre",
+        "dec.conv_pre",
         config.upsample_initial_channels,
         7,
         3);
@@ -767,7 +767,7 @@ core::TensorValue decoder(
             ctx,
             weights,
             hidden,
-            "model.dec.ups." + std::to_string(stage),
+            "dec.ups." + std::to_string(stage),
             out_channels,
             kernel,
             rate,
@@ -781,7 +781,7 @@ core::TensorValue decoder(
                 ctx,
                 weights,
                 hidden,
-                "model.dec.resblocks." + std::to_string(index),
+                "dec.resblocks." + std::to_string(index),
                 config.resblock_kernel_sizes[block],
                 config.resblock_dilations[block]);
             sum = sum.valid() ? add(ctx, sum, value) : value;
@@ -796,7 +796,7 @@ core::TensorValue decoder(
         ctx,
         weights,
         hidden,
-        "model.dec.conv_post",
+        "dec.conv_post",
         1,
         7,
         3,
@@ -900,7 +900,7 @@ std::unique_ptr<DurationGraph> build_duration_graph(
         ctx,
         weights,
         hidden,
-        "model.enc_p.proj",
+        "enc_p.proj",
         2 * config.inter_channels,
         1,
         0);

@@ -4,8 +4,8 @@
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/debug/profiler.h"
-#include "engine/framework/modules/conv_modules.h"
-#include "engine/framework/modules/optimizations/fast_conv_modules.h"
+#include "engine/framework/modules/streaming_conv_modules.h"
+#include "engine/framework/modules/vocoders/bigvgan_vocoder.h"
 
 #include <ggml-alloc.h>
 
@@ -13,7 +13,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -23,9 +22,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-constexpr int64_t kNumResblockKernels = 3;
-constexpr int64_t kActivationRatio = 2;
-constexpr int64_t kActivationKernel = 12;
 constexpr size_t kVocoderWeightContextBytes = 1536ull * 1024ull * 1024ull;
 constexpr size_t kVocoderGraphContextBytes = 384ull * 1024ull * 1024ull;
 constexpr size_t kVocoderGraphNodeCapacity = 65536;
@@ -37,11 +33,6 @@ struct GgmlContextDeleter {
         }
     }
 };
-
-std::vector<float> reversed_filter(std::vector<float> values) {
-    std::reverse(values.begin(), values.end());
-    return values;
-}
 
 std::vector<float> expand_channel_filter(const std::vector<float> & filter, int64_t channels) {
     if (filter.empty() || channels <= 0) {
@@ -55,13 +46,6 @@ std::vector<float> expand_channel_filter(const std::vector<float> & filter, int6
             expanded.begin() + static_cast<std::ptrdiff_t>(channel * static_cast<int64_t>(filter.size())));
     }
     return expanded;
-}
-
-std::vector<float> expand_activation_filter(const std::vector<float> & filter, int64_t channels) {
-    if (static_cast<int64_t>(filter.size()) != kActivationKernel || channels <= 0) {
-        throw std::runtime_error("DramaBox vocoder activation filter shape mismatch");
-    }
-    return expand_channel_filter(filter, channels);
 }
 
 float sinc(float x) {
@@ -88,184 +72,64 @@ std::vector<float> make_hann_resampler_filter(int64_t ratio) {
     return filter;
 }
 
-DramaBoxVocoderConv1dWeights load_conv1d(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    assets::TensorStorageType storage_type,
-    int64_t out_channels,
-    int64_t in_channels,
-    int64_t kernel,
-    int64_t stride,
-    int64_t padding,
-    int64_t dilation,
-    bool use_bias) {
-    DramaBoxVocoderConv1dWeights out;
-    out.in_channels = in_channels;
-    out.out_channels = out_channels;
-    out.kernel = kernel;
-    out.stride = stride;
-    out.padding = padding;
-    out.dilation = dilation;
-    out.use_bias = use_bias;
-    out.conv.weight = store.load_tensor(source, prefix + ".weight", storage_type, {out_channels, in_channels, kernel});
-    if (use_bias) {
-        out.conv.bias = store.load_tensor(source, prefix + ".bias", assets::TensorStorageType::F32, {out_channels});
-    }
-    return out;
-}
-
-DramaBoxVocoderConvTranspose1dWeights load_conv_transpose1d(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    int64_t in_channels,
-    int64_t out_channels,
-    int64_t kernel,
-    int64_t stride,
-    int64_t padding,
-    bool use_bias) {
-    DramaBoxVocoderConvTranspose1dWeights out;
-    out.in_channels = in_channels;
-    out.out_channels = out_channels;
-    out.kernel = kernel;
-    out.stride = stride;
-    out.padding = padding;
-    out.use_bias = use_bias;
-    out.conv.weight = store.load_tensor(source, prefix + ".weight", assets::TensorStorageType::F32, {in_channels, out_channels, kernel});
-    if (use_bias) {
-        out.conv.bias = store.load_tensor(source, prefix + ".bias", assets::TensorStorageType::F32, {out_channels});
-    }
-    return out;
-}
-
-DramaBoxVocoderActivationWeights load_activation(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    int64_t channels) {
-    const auto alpha_raw = source.require_f32(prefix + ".act.alpha", {channels});
-    const auto beta_raw = source.require_f32(prefix + ".act.beta", {channels});
-    std::vector<float> alpha(static_cast<size_t>(channels), 0.0F);
-    std::vector<float> inv_beta(static_cast<size_t>(channels), 0.0F);
-    for (int64_t index = 0; index < channels; ++index) {
-        alpha[static_cast<size_t>(index)] = std::exp(alpha_raw[static_cast<size_t>(index)]);
-        inv_beta[static_cast<size_t>(index)] = 1.0F / (std::exp(beta_raw[static_cast<size_t>(index)]) + 1.0e-9F);
-    }
-    DramaBoxVocoderActivationWeights out;
-    out.alpha = store.make_from_f32(core::TensorShape::from_dims({channels}), assets::TensorStorageType::F32, std::move(alpha));
-    out.inv_beta = store.make_from_f32(core::TensorShape::from_dims({channels}), assets::TensorStorageType::F32, std::move(inv_beta));
-    out.up_filter = store.make_from_f32(
-        core::TensorShape::from_dims({channels, 1, 1, kActivationKernel}),
-        assets::TensorStorageType::F32,
-        expand_activation_filter(reversed_filter(source.require_f32(prefix + ".upsample.filter", {1, 1, kActivationKernel})), channels));
-    out.down_filter = store.make_from_f32(
-        core::TensorShape::from_dims({channels, 1, 1, kActivationKernel}),
-        assets::TensorStorageType::F32,
-        expand_activation_filter(source.require_f32(prefix + ".downsample.lowpass.filter", {1, 1, kActivationKernel}), channels));
-    return out;
-}
-
-DramaBoxVocoderResBlockWeights load_resblock(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    assets::TensorStorageType storage_type,
-    int64_t channels,
-    int64_t kernel) {
-    DramaBoxVocoderResBlockWeights out;
-    out.convs1.reserve(3);
-    out.convs2.reserve(3);
-    out.activations.reserve(6);
-    const int dilations[3] = {1, 3, 5};
-    for (int layer = 0; layer < 3; ++layer) {
-        const int dilation = dilations[layer];
-        out.convs1.push_back(load_conv1d(
-            store,
-            source,
-            prefix + ".convs1." + std::to_string(layer),
-            storage_type,
-            channels,
-            channels,
-            kernel,
-            1,
-            static_cast<int>((kernel * dilation - dilation) / 2),
-            dilation,
-            true));
-    }
-    for (int layer = 0; layer < 3; ++layer) {
-        out.convs2.push_back(load_conv1d(
-            store,
-            source,
-            prefix + ".convs2." + std::to_string(layer),
-            storage_type,
-            channels,
-            channels,
-            kernel,
-            1,
-            static_cast<int>((kernel - 1) / 2),
-            1,
-            true));
-    }
-    for (int activation = 0; activation < 6; ++activation) {
-        const char * group = activation < 3 ? "acts1" : "acts2";
-        const int layer = activation < 3 ? activation : activation - 3;
-        out.activations.push_back(load_activation(
-            store,
-            source,
-            prefix + "." + group + "." + std::to_string(layer),
-            channels));
-    }
-    return out;
-}
-
-DramaBoxBigVganWeights load_bigvgan(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
+modules::BigVganVocoderConfig make_bigvgan_config(
     assets::TensorStorageType storage_type,
     int64_t sample_rate,
     int64_t initial_channel,
     const std::vector<int64_t> & upsample_rates,
     const std::vector<int64_t> & upsample_kernel_sizes) {
-    const std::vector<int64_t> resblock_kernels = {3, 7, 11};
-    DramaBoxBigVganWeights weights;
-    weights.sample_rate = sample_rate;
-    weights.num_mels = 128;
-    weights.initial_channel = initial_channel;
-    weights.upsample_rates = upsample_rates;
-    weights.upsample_kernel_sizes = upsample_kernel_sizes;
-    weights.conv_pre = load_conv1d(store, source, prefix + ".conv_pre", storage_type, initial_channel, 128, 7, 1, 3, 1, true);
-    const int64_t upsample_count = static_cast<int64_t>(upsample_rates.size());
-    weights.ups.reserve(static_cast<size_t>(upsample_count));
-    weights.resblocks.reserve(static_cast<size_t>(upsample_count * kNumResblockKernels));
-    for (int64_t up_index = 0; up_index < upsample_count; ++up_index) {
-        const int64_t in_channels = initial_channel / (int64_t{1} << up_index);
-        const int64_t out_channels = initial_channel / (int64_t{1} << (up_index + 1));
-        weights.ups.push_back(load_conv_transpose1d(
-            store,
-            source,
-            prefix + ".ups." + std::to_string(up_index),
-            in_channels,
-            out_channels,
-            upsample_kernel_sizes[static_cast<size_t>(up_index)],
-            upsample_rates[static_cast<size_t>(up_index)],
-            (upsample_kernel_sizes[static_cast<size_t>(up_index)] - upsample_rates[static_cast<size_t>(up_index)]) / 2,
-            true));
-        for (int64_t kernel_index = 0; kernel_index < kNumResblockKernels; ++kernel_index) {
-            weights.resblocks.push_back(load_resblock(
-                store,
-                source,
-                prefix + ".resblocks." + std::to_string(up_index * kNumResblockKernels + kernel_index),
-                storage_type,
-                out_channels,
-                resblock_kernels[static_cast<size_t>(kernel_index)]));
+    return {
+        sample_rate,
+        128,
+        1,
+        1,
+        1,
+        initial_channel,
+        true,
+        upsample_rates,
+        upsample_kernel_sizes,
+        {3, 7, 11},
+        storage_type,
+    };
+}
+
+std::vector<float> convert_transpose_conv1d_weight(
+    const std::vector<float> & weight,
+    int64_t in_channels,
+    int64_t out_channels,
+    int64_t kernel) {
+    if (static_cast<int64_t>(weight.size()) != in_channels * out_channels * kernel) {
+        throw std::runtime_error("DramaBox BigVGAN transposed-conv weight shape mismatch");
+    }
+    std::vector<float> converted(static_cast<size_t>(out_channels * in_channels * kernel), 0.0F);
+    for (int64_t in_channel = 0; in_channel < in_channels; ++in_channel) {
+        for (int64_t out_channel = 0; out_channel < out_channels; ++out_channel) {
+            for (int64_t tap = 0; tap < kernel; ++tap) {
+                const size_t src = static_cast<size_t>((in_channel * out_channels + out_channel) * kernel + tap);
+                const size_t dst =
+                    static_cast<size_t>((out_channel * in_channels + in_channel) * kernel + (kernel - 1 - tap));
+                converted[dst] = weight[src];
+            }
         }
     }
-    const int64_t post_channels = initial_channel / (int64_t{1} << upsample_count);
-    weights.activation_post = load_activation(store, source, prefix + ".act_post", post_channels);
-    weights.conv_post = load_conv1d(store, source, prefix + ".conv_post", storage_type, 2, post_channels, 7, 1, 3, 1, false);
-    return weights;
+    return converted;
+}
+
+void convert_direct_bigvgan_upsample_weights(
+    core::BackendWeightStore & store,
+    const assets::TensorSource & source,
+    const std::string & prefix,
+    modules::BigVganVocoderWeights & weights) {
+    for (size_t index = 0; index < weights.ups.size(); ++index) {
+        auto & up = weights.ups[index];
+        const std::string weight_name = prefix + ".ups." + std::to_string(index) + ".weight";
+        const auto weight = source.require_f32(weight_name, {up.in_channels, up.out_channels, up.kernel});
+        up.conv1d_weight = store.make_from_f32(
+            core::TensorShape::from_dims({up.out_channels, up.in_channels, up.kernel}),
+            assets::TensorStorageType::F32,
+            convert_transpose_conv1d_weight(weight, up.in_channels, up.out_channels, up.kernel));
+        up.transpose_weight.reset();
+    }
 }
 
 ggml_tensor * repeat_frame(ggml_context * ctx, ggml_tensor * x, int64_t frame, int64_t count) {
@@ -290,156 +154,6 @@ ggml_tensor * zero_pad_right(ggml_context * ctx, ggml_tensor * x, int64_t right)
     }
     ggml_tensor * zero = ggml_scale(ctx, repeat_frame(ctx, x, x->ne[0] - 1, right), 0.0F);
     return ggml_concat(ctx, x, zero, 0);
-}
-
-ggml_tensor * conv1d(
-    ggml_context * ctx,
-    core::BackendType backend_type,
-    ggml_tensor * x,
-    const DramaBoxVocoderConv1dWeights & conv,
-    const std::string & name) {
-    core::ModuleBuildContext build_ctx{ctx, name.c_str(), backend_type};
-    const auto input = core::wrap_tensor(
-        ggml_reshape_3d(ctx, core::has_backend_addressable_layout(x) ? x : ggml_cont(ctx, x), x->ne[0], x->ne[1], 1),
-        core::TensorShape::from_dims({1, conv.in_channels, x->ne[0]}),
-        GGML_TYPE_F32);
-    const modules::FastConv1dModule module(
-        {
-            conv.in_channels,
-            conv.out_channels,
-            conv.kernel,
-            static_cast<int>(conv.stride),
-            static_cast<int>(conv.padding),
-            static_cast<int>(conv.dilation),
-            conv.use_bias,
-        },
-        modules::FastConv1dKind::MinittsFast1dIm2col);
-    const auto output = module.build(build_ctx, input, conv.conv);
-    return ggml_set_name(ggml_reshape_2d(ctx, output.tensor, output.shape.dims[2], output.shape.dims[1]), name.c_str());
-}
-
-ggml_tensor * conv_transpose1d(
-    ggml_context * ctx,
-    core::BackendType backend_type,
-    ggml_tensor * x,
-    const DramaBoxVocoderConvTranspose1dWeights & conv,
-    const std::string & name) {
-    core::ModuleBuildContext build_ctx{ctx, name.c_str(), backend_type};
-    auto * input = ggml_reshape_3d(ctx, core::has_backend_addressable_layout(x) ? x : ggml_cont(ctx, x), x->ne[0], x->ne[1], 1);
-    const auto input_value =
-        core::wrap_tensor(input, core::TensorShape::from_dims({1, conv.in_channels, x->ne[0]}), GGML_TYPE_F32);
-    const auto module = modules::ConvTranspose1dModule({
-        conv.in_channels,
-        conv.out_channels,
-        conv.kernel,
-        static_cast<int>(conv.stride),
-        static_cast<int>(conv.padding),
-        1,
-        conv.use_bias});
-    const auto output = module.build(build_ctx, input_value, conv.conv);
-    return ggml_set_name(ggml_reshape_2d(ctx, output.tensor, output.shape.dims[2], output.shape.dims[1]), name.c_str());
-}
-
-ggml_tensor * depthwise_conv_transpose_filter(ggml_context * ctx, ggml_tensor * x, const core::TensorValue & filter, int64_t stride) {
-    ggml_tensor * x3 = ggml_reshape_3d(ctx, core::has_backend_addressable_layout(x) ? x : ggml_cont(ctx, x), 1, x->ne[0], x->ne[1]);
-    ggml_tensor * zero3 = ggml_scale(ctx, x3, 0.0F);
-    ggml_tensor * interleaved3 = x3;
-    for (int64_t index = 1; index < stride; ++index) {
-        interleaved3 = ggml_concat(ctx, interleaved3, zero3, 0);
-    }
-    ggml_tensor * interleaved = ggml_reshape_2d(ctx, interleaved3, x->ne[0] * stride, x->ne[1]);
-    interleaved = ggml_view_2d(ctx, interleaved, x->ne[0] * stride - (stride - 1), interleaved->ne[1], interleaved->nb[1], 0);
-    ggml_tensor * interleaved_contiguous = core::has_backend_addressable_layout(interleaved) ? interleaved : ggml_cont(ctx, interleaved);
-    ggml_tensor * input4 = ggml_reshape_4d(ctx, interleaved_contiguous, interleaved->ne[0], 1, interleaved->ne[1], 1);
-    ggml_tensor * y4 = ggml_conv_2d_dw_direct(ctx, filter.tensor, input4, 1, 1, static_cast<int>(filter.shape.dims[3] - 1), 0, 1, 1);
-    y4 = core::has_backend_addressable_layout(y4) ? y4 : ggml_cont(ctx, y4);
-    return ggml_reshape_2d(ctx, y4, y4->ne[0], y4->ne[2]);
-}
-
-ggml_tensor * depthwise_conv_filter(ggml_context * ctx, ggml_tensor * x, const core::TensorValue & filter, int64_t stride) {
-    ggml_tensor * x4 = ggml_reshape_4d(ctx, core::has_backend_addressable_layout(x) ? x : ggml_cont(ctx, x), x->ne[0], 1, x->ne[1], 1);
-    ggml_tensor * y4 = ggml_conv_2d_dw_direct(ctx, filter.tensor, x4, static_cast<int>(stride), 1, 0, 0, 1, 1);
-    y4 = core::has_backend_addressable_layout(y4) ? y4 : ggml_cont(ctx, y4);
-    return ggml_reshape_2d(ctx, y4, y4->ne[0], y4->ne[2]);
-}
-
-ggml_tensor * activation1d(ggml_context * ctx, ggml_tensor * x, const DramaBoxVocoderActivationWeights & weights, const std::string & name) {
-    const int64_t pad = kActivationKernel / kActivationRatio - 1;
-    const int64_t pad_left = pad * kActivationRatio + (kActivationKernel - kActivationRatio) / 2;
-    const int64_t pad_right = pad * kActivationRatio + (kActivationKernel - kActivationRatio + 1) / 2;
-    ggml_tensor * up = replicate_pad(ctx, x, pad, pad);
-    up = depthwise_conv_transpose_filter(ctx, up, weights.up_filter, kActivationRatio);
-    up = ggml_scale(ctx, up, static_cast<float>(kActivationRatio));
-    up = ggml_view_2d(
-        ctx,
-        up,
-        up->ne[0] - pad_left - pad_right,
-        up->ne[1],
-        up->nb[1],
-        static_cast<size_t>(pad_left) * up->nb[0]);
-    ggml_tensor * alpha = ggml_set_name(ggml_reshape_2d(ctx, weights.alpha.tensor, 1, x->ne[1]), (name + ".alpha").c_str());
-    ggml_tensor * inv_beta = ggml_set_name(ggml_reshape_2d(ctx, weights.inv_beta.tensor, 1, x->ne[1]), (name + ".inv_beta").c_str());
-    ggml_tensor * sinusoid = ggml_sin(ctx, ggml_mul(ctx, up, alpha));
-    sinusoid = core::has_backend_addressable_layout(sinusoid) ? sinusoid : ggml_cont(ctx, sinusoid);
-    ggml_tensor * periodic = ggml_sqr(ctx, sinusoid);
-    ggml_tensor * activated = ggml_add(ctx, up, ggml_mul(ctx, periodic, inv_beta));
-    const int64_t lowpass_left = kActivationKernel / 2 - 1;
-    const int64_t lowpass_right = kActivationKernel / 2;
-    ggml_tensor * down = replicate_pad(ctx, activated, lowpass_left, lowpass_right);
-    down = depthwise_conv_filter(ctx, down, weights.down_filter, kActivationRatio);
-    return ggml_set_name(down, name.c_str());
-}
-
-ggml_tensor * amp_block(
-    ggml_context * ctx,
-    core::BackendType backend_type,
-    ggml_tensor * x,
-    const DramaBoxVocoderResBlockWeights & block,
-    const std::string & name) {
-    for (int layer = 0; layer < 3; ++layer) {
-        ggml_tensor * xt = activation1d(ctx, x, block.activations[static_cast<size_t>(layer)], name + ".act1." + std::to_string(layer));
-        xt = conv1d(ctx, backend_type, xt, block.convs1[static_cast<size_t>(layer)], name + ".convs1." + std::to_string(layer));
-        xt = activation1d(ctx, xt, block.activations[static_cast<size_t>(layer + 3)], name + ".act2." + std::to_string(layer));
-        xt = conv1d(ctx, backend_type, xt, block.convs2[static_cast<size_t>(layer)], name + ".convs2." + std::to_string(layer));
-        x = ggml_set_name(ggml_add(ctx, x, xt), (name + ".residual." + std::to_string(layer)).c_str());
-    }
-    return x;
-}
-
-ggml_tensor * build_bigvgan(
-    ggml_context * ctx,
-    core::BackendType backend_type,
-    const DramaBoxBigVganWeights & weights,
-    ggml_tensor * mel,
-    bool apply_final_activation,
-    bool use_tanh_at_final,
-    ggml_tensor ** conv_pre_output = nullptr,
-    ggml_tensor ** upsample0_output = nullptr) {
-    ggml_tensor * x = conv1d(ctx, backend_type, mel, weights.conv_pre, "conv_pre");
-    if (conv_pre_output != nullptr) {
-        *conv_pre_output = x;
-    }
-    for (size_t up_index = 0; up_index < weights.ups.size(); ++up_index) {
-        x = conv_transpose1d(ctx, backend_type, x, weights.ups[up_index], "ups." + std::to_string(up_index));
-        ggml_tensor * sum = nullptr;
-        for (int64_t kernel_index = 0; kernel_index < kNumResblockKernels; ++kernel_index) {
-            const size_t block_index = up_index * static_cast<size_t>(kNumResblockKernels) + static_cast<size_t>(kernel_index);
-            ggml_tensor * block = amp_block(ctx, backend_type, x, weights.resblocks[block_index], "resblocks." + std::to_string(block_index));
-            sum = sum == nullptr ? block : ggml_add(ctx, sum, block);
-        }
-        x = ggml_set_name(
-            ggml_scale(ctx, sum, 1.0F / static_cast<float>(kNumResblockKernels)),
-            ("upsample." + std::to_string(up_index)).c_str());
-        if (up_index == 0 && upsample0_output != nullptr) {
-            *upsample0_output = x;
-        }
-    }
-    x = activation1d(ctx, x, weights.activation_post, "activation_post");
-    x = conv1d(ctx, backend_type, x, weights.conv_post, "conv_post");
-    if (!apply_final_activation) {
-        return ggml_set_name(x, "waveform");
-    }
-    return ggml_set_name(use_tanh_at_final ? ggml_tanh(ctx, x) : ggml_clamp(ctx, x, -1.0F, 1.0F), "waveform");
 }
 
 ggml_tensor * build_stereo_mel_from_wave(
@@ -471,6 +185,7 @@ ggml_tensor * build_stereo_mel_from_wave(
 
 ggml_tensor * build_resampler_skip(
     ggml_context * ctx,
+    core::BackendType backend_type,
     ggml_tensor * low_wave,
     const DramaBoxVocoderWeights & weights,
     int64_t padded_samples) {
@@ -481,7 +196,18 @@ ggml_tensor * build_resampler_skip(
     const int64_t pad_right = kernel_size - ratio;
     ggml_tensor * x = zero_pad_right(ctx, low_wave, padded_samples - low_wave->ne[0]);
     x = replicate_pad(ctx, x, width, width);
-    ggml_tensor * up = depthwise_conv_transpose_filter(ctx, x, weights.resampler_filter, ratio);
+    core::ModuleBuildContext build_ctx{ctx, "resampler_skip", backend_type};
+    const auto input = core::wrap_tensor(
+        x,
+        core::TensorShape::from_dims({x->ne[1], x->ne[0]}),
+        GGML_TYPE_F32);
+    const auto output = modules::DepthwiseConvTranspose1dModule({
+        x->ne[1],
+        weights.resampler_filter.shape.dims[3],
+        static_cast<int>(ratio),
+        false,
+    }).build(build_ctx, input, {weights.resampler_filter, std::nullopt});
+    ggml_tensor * up = output.tensor;
     up = ggml_scale(ctx, up, static_cast<float>(ratio));
     return ggml_view_2d(
         ctx,
@@ -509,24 +235,30 @@ DramaBoxVocoderWeights load_dramabox_vocoder_weights(
         backend_type,
         "dramabox.vocoder.weights",
         weight_context_bytes == 0 ? kVocoderWeightContextBytes : weight_context_bytes);
-    weights.vocoder = load_bigvgan(
+    weights.vocoder = modules::load_direct_bigvgan_from_tensor_source(
         *weights.store,
         source,
         "vocoder.vocoder",
-        vocoder_storage_type,
-        assets.config.vocoder.input_sample_rate,
-        1536,
-        {5, 2, 2, 2, 2, 2},
-        {11, 4, 4, 4, 4, 4});
-    weights.bwe = load_bigvgan(
+        make_bigvgan_config(
+            vocoder_storage_type,
+            assets.config.vocoder.input_sample_rate,
+            1536,
+            {5, 2, 2, 2, 2, 2},
+            {11, 4, 4, 4, 4, 4}),
+        modules::BigVganActivationLayout::GroupedByStage);
+    weights.bwe = modules::load_direct_bigvgan_from_tensor_source(
         *weights.store,
         source,
         "vocoder.bwe_generator",
-        vocoder_storage_type,
-        assets.config.vocoder.output_sample_rate,
-        assets.config.vocoder.bwe_initial_channel,
-        assets.config.vocoder.bwe_upsample_rates,
-        assets.config.vocoder.bwe_upsample_kernel_sizes);
+        make_bigvgan_config(
+            vocoder_storage_type,
+            assets.config.vocoder.output_sample_rate,
+            assets.config.vocoder.bwe_initial_channel,
+            assets.config.vocoder.bwe_upsample_rates,
+            assets.config.vocoder.bwe_upsample_kernel_sizes),
+        modules::BigVganActivationLayout::GroupedByStage);
+    convert_direct_bigvgan_upsample_weights(*weights.store, source, "vocoder.vocoder", weights.vocoder);
+    convert_direct_bigvgan_upsample_weights(*weights.store, source, "vocoder.bwe_generator", weights.bwe);
     weights.mel_basis = weights.store->load_tensor(
         source,
         "vocoder.mel_stft.mel_basis",
@@ -627,14 +359,19 @@ private:
         mel_value_ = core::wrap_tensor(input_, core::TensorShape::from_dims({1, 2, mel_frames_, 64}), GGML_TYPE_F32);
         ggml_set_input(input_);
         mel_ = ggml_reshape_2d(ctx_.get(), ggml_cont(ctx_.get(), ggml_permute(ctx_.get(), input_, 1, 0, 2, 3)), mel_frames_, 128);
-        output_ = build_bigvgan(ctx_.get(), backend_type_, weights_.vocoder, mel_, true, false);
+        output_ = modules::build_bigvgan_graph(
+            ctx_.get(),
+            backend_type_,
+            weights_.vocoder,
+            mel_,
+            {true, false, modules::BigVganActivationLayout::GroupedByStage, true});
         output_ = core::has_backend_addressable_layout(output_) ? output_ : ggml_cont(ctx_.get(), output_);
         ggml_set_output(output_);
         const auto expand_start = Clock::now();
         graph_ = ggml_new_graph_custom(ctx_.get(), kVocoderGraphNodeCapacity, false);
         ggml_build_forward_expand(graph_, output_);
         debug::timing_log_scalar("dramabox.vocoder16.graph.expand_ms", debug::elapsed_ms(expand_start, Clock::now()));
-        debug::timing_log_scalar("dramabox.vocoder16.graph.nodes", static_cast<double>(ggml_graph_n_nodes(graph_)));
+        debug::trace_log_scalar("dramabox.vocoder16.graph.nodes", static_cast<int64_t>(ggml_graph_n_nodes(graph_)));
         const auto alloc_start = Clock::now();
         gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
         if (gallocr_ == nullptr ||
@@ -738,8 +475,13 @@ private:
         input_value_ = core::wrap_tensor(input_, core::TensorShape::from_dims({2, low_samples_}), GGML_TYPE_F32);
         ggml_set_input(input_);
         ggml_tensor * bwe_mel = build_stereo_mel_from_wave(ctx_.get(), input_, weights_, padded_samples_);
-        ggml_tensor * residual = build_bigvgan(ctx_.get(), backend_type_, weights_.bwe, bwe_mel, false, false);
-        ggml_tensor * skip = build_resampler_skip(ctx_.get(), input_, weights_, padded_samples_);
+        ggml_tensor * residual = modules::build_bigvgan_graph(
+            ctx_.get(),
+            backend_type_,
+            weights_.bwe,
+            bwe_mel,
+            {false, false, modules::BigVganActivationLayout::GroupedByStage, true});
+        ggml_tensor * skip = build_resampler_skip(ctx_.get(), backend_type_, input_, weights_, padded_samples_);
         ggml_tensor * summed = ggml_clamp(ctx_.get(), ggml_add(ctx_.get(), residual, skip), -1.0F, 1.0F);
         output_ = ggml_view_2d(ctx_.get(), summed, output_samples_, summed->ne[1], summed->nb[1], 0);
         output_ = core::has_backend_addressable_layout(output_) ? output_ : ggml_cont(ctx_.get(), output_);
@@ -825,6 +567,12 @@ DramaBoxVocoderOutput DramaBoxVocoderRuntime::synthesize(const DramaBoxDecodedMe
     out.samples = static_cast<int64_t>(out.waveform.size()) / 2;
     out.sample_rate = assets_->config.vocoder.output_sample_rate;
     return out;
+}
+
+void DramaBoxVocoderRuntime::release_runtime_state() const {
+    bwe_graph_.reset();
+    vocoder_graph_.reset();
+    weights_.reset();
 }
 
 }  // namespace engine::models::dramabox

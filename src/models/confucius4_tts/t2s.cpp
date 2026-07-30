@@ -51,33 +51,6 @@ struct GgmlContextDeleter {
     }
 };
 
-modules::LinearWeights load_hf_conv1d_linear(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    assets::TensorStorageType storage_type,
-    int64_t in_features,
-    int64_t out_features,
-    bool use_bias) {
-    const auto source_weight = source.require_f32(prefix + ".weight", {in_features, out_features});
-    std::vector<float> transposed(static_cast<size_t>(out_features * in_features));
-    for (int64_t in = 0; in < in_features; ++in) {
-        for (int64_t out = 0; out < out_features; ++out) {
-            transposed[static_cast<size_t>(out * in_features + in)] =
-                source_weight[static_cast<size_t>(in * out_features + out)];
-        }
-    }
-    modules::LinearWeights weights;
-    weights.weight = store.make_from_f32(
-        core::TensorShape::from_dims({out_features, in_features}),
-        storage_type,
-        std::move(transposed));
-    if (use_bias) {
-        weights.bias = store.load_f32_tensor(source, prefix + ".bias", {out_features});
-    }
-    return weights;
-}
-
 ConfuciusT2SConvWeights load_speaker_conv(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
@@ -92,22 +65,16 @@ ConfuciusT2SConvWeights load_speaker_conv(
     conv.out_channels = out_channels;
     conv.kernel = kernel;
     conv.dilation = dilation;
-    conv.weights = {
-        store.load_tensor(source, prefix + ".weight", storage_type, {out_channels, in_channels, kernel}),
-        store.load_f32_tensor(source, prefix + ".bias", {out_channels}),
-    };
+    conv.weights = binding::conv1d_from_source(
+        store,
+        source,
+        prefix,
+        storage_type,
+        out_channels,
+        in_channels,
+        kernel,
+        true);
     return conv;
-}
-
-modules::NormWeights load_norm(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    int64_t hidden) {
-    return {
-        store.load_f32_tensor(source, prefix + ".weight", {hidden}),
-        store.load_f32_tensor(source, prefix + ".bias", {hidden}),
-    };
 }
 
 ConfuciusT2SSpeakerWeights load_speaker_weights(
@@ -672,16 +639,56 @@ std::shared_ptr<const ConfuciusT2SWeights> load_confucius_t2s_weights(
     for (int64_t layer = 0; layer < config.num_layers; ++layer) {
         const std::string prefix = "transformer.h." + std::to_string(layer);
         ConfuciusT2SLayerWeights layer_weights;
-        layer_weights.attn_norm = load_norm(store, source, prefix + ".ln_1", config.model_dim);
-        layer_weights.qkv = load_hf_conv1d_linear(store, source, prefix + ".attn.c_attn", matmul_storage_type, config.model_dim, 3 * config.model_dim, true);
-        layer_weights.attn_out = load_hf_conv1d_linear(store, source, prefix + ".attn.c_proj", matmul_storage_type, config.model_dim, config.model_dim, true);
-        layer_weights.mlp_norm = load_norm(store, source, prefix + ".ln_2", config.model_dim);
-        layer_weights.mlp_in = load_hf_conv1d_linear(store, source, prefix + ".mlp.c_fc", matmul_storage_type, config.model_dim, 4 * config.model_dim, true);
-        layer_weights.mlp_out = load_hf_conv1d_linear(store, source, prefix + ".mlp.c_proj", matmul_storage_type, 4 * config.model_dim, config.model_dim, true);
+        layer_weights.attn_norm = binding::norm_from_source(
+            store,
+            source,
+            prefix + ".ln_1",
+            config.model_dim);
+        layer_weights.qkv = binding::hf_conv1d_linear_from_source(
+            store,
+            source,
+            prefix + ".attn.c_attn",
+            matmul_storage_type,
+            config.model_dim,
+            3 * config.model_dim,
+            true);
+        layer_weights.attn_out = binding::hf_conv1d_linear_from_source(
+            store,
+            source,
+            prefix + ".attn.c_proj",
+            matmul_storage_type,
+            config.model_dim,
+            config.model_dim,
+            true);
+        layer_weights.mlp_norm = binding::norm_from_source(
+            store,
+            source,
+            prefix + ".ln_2",
+            config.model_dim);
+        layer_weights.mlp_in = binding::hf_conv1d_linear_from_source(
+            store,
+            source,
+            prefix + ".mlp.c_fc",
+            matmul_storage_type,
+            config.model_dim,
+            4 * config.model_dim,
+            true);
+        layer_weights.mlp_out = binding::hf_conv1d_linear_from_source(
+            store,
+            source,
+            prefix + ".mlp.c_proj",
+            matmul_storage_type,
+            4 * config.model_dim,
+            config.model_dim,
+            true);
         weights->layers.push_back(std::move(layer_weights));
     }
-    weights->gpt_final_norm = load_norm(store, source, "transformer.ln_f", config.model_dim);
-    weights->final_norm = load_norm(store, source, "final_norm", config.model_dim);
+    weights->gpt_final_norm = binding::norm_from_source(
+        store,
+        source,
+        "transformer.ln_f",
+        config.model_dim);
+    weights->final_norm = binding::norm_from_source(store, source, "final_norm", config.model_dim);
     weights->semantic_head = binding::linear_from_source(
         store,
         source,

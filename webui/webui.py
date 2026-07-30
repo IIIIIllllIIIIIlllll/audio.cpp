@@ -336,7 +336,8 @@ def _discover_dev_bin_dirs():
     # A plain `cmake -B build` lands in build/bin with single-config generators
     # (Ninja, Makefiles); multi-config generators (Visual Studio, Xcode) nest the
     # exe in a per-config subdir, so also look in build/bin/Release and .../Debug.
-    for plain in (os.path.join(PROJECT_ROOT, "build", "bin"),
+    for plain in (os.path.join(PROJECT_ROOT, "build", "debug", "bin"),
+                  os.path.join(PROJECT_ROOT, "build", "bin"),
                   os.path.join(PROJECT_ROOT, "build", "bin", "Release"),
                   os.path.join(PROJECT_ROOT, "build", "bin", "Debug")):
         if not os.path.isfile(os.path.join(plain, SERVER_EXE_NAME)):
@@ -413,7 +414,6 @@ if not os.path.isfile(SERVER_EXE) and os.path.isfile(_dev_server_exe(BACKEND)):
     SERVER_EXE = _dev_server_exe(BACKEND)
 LOG_PATH = os.path.join(LOG_DIR, "audiocpp_server_webui.log")
 LOAD_TIMEOUT = int(os.environ.get("AUDIOCPP_LOAD_TIMEOUT", "300"))
-GGUF_TYPES = ("orig", "f16", "bf16", "q8_0", "q2_k", "q3_k", "q4_k", "q5_k", "q6_k")
 
 # Only families with a model package spec can load the runtime GGUF produced by
 # audiocpp_gguf; a safetensors file by itself is not evidence that the
@@ -464,20 +464,6 @@ def _spec_families():
 
 GGUF_NATIVE_FAMILIES = _spec_families()
 
-# These families have input layouts the WebUI can assemble without guessing.
-# Other native-GGUF composite packages remain available through the converter
-# CLI until their explicit multi-input layout is added here.
-GGUF_SIMPLE_MODEL_FAMILIES = frozenset({
-    "higgs_audio_stt",
-    "hviske_asr",
-    "nemotron_asr",
-    "qwen3_asr",
-    "qwen3_forced_aligner",
-    "vibevoice_asr",
-})
-GGUF_WEBUI_CONVERTIBLE_FAMILIES = GGUF_SIMPLE_MODEL_FAMILIES | {"qwen3_tts"}
-
-
 def _find_gguf_exe():
     """Find the converter in a development build or an integrated bundle.
 
@@ -513,25 +499,21 @@ def _find_gguf_exe():
             return candidate
     return None
 
-# model_manager_webui.py downloads not-yet-installed models in the background. It
-# wraps the upstream tools/model_manager.py CLI with resumable, Torch-free
-# downloads (falling back to the upstream tool if the wrapper isn't present).
 MODELS_ROOT = os.path.join(BUNDLE_ROOT, "models")
 
 
-def _find_model_manager():
-    for c in (os.environ.get("AUDIOCPP_MODEL_MANAGER"),
+def _find_spec_model_manager():
+    for c in (os.environ.get("AUDIOCPP_MODEL_MANAGER_V2"),
               os.path.join(HERE, "model_manager_webui.py"),
               os.path.join(BUNDLE_ROOT, "webui", "model_manager_webui.py"),
-              os.path.join(PROJECT_ROOT, "webui", "model_manager_webui.py"),
-              os.path.join(BUNDLE_ROOT, "tools", "model_manager.py"),
-              os.path.join(PROJECT_ROOT, "tools", "model_manager.py")):
+              os.path.join(BUNDLE_ROOT, "tools", "model_manager_v2.py"),
+              os.path.join(PROJECT_ROOT, "tools", "model_manager_v2.py")):
         if c and os.path.isfile(c):
             return c
     return None
 
 
-MODEL_MANAGER = _find_model_manager()
+SPEC_MODEL_MANAGER = _find_spec_model_manager()
 
 
 def _detect_vram_gb():
@@ -628,6 +610,27 @@ MODEL_PROFILES = {
     "pocket_tts": {
         "input_hint": "**PocketTTS**：必须提供参考音色（上传/录制/内置）。",
     },
+    "inflect_v2": {
+        "input_hint": "**Inflect Micro v2**：英语离线 TTS；Micro 是默认包，Nano 可另装后手动选择路径。",
+        "lang_map": {"english": "en"},
+    },
+    "dramabox": {
+        "input_hint": (
+            "**DramaBox**：英语 TTS / voice clone；上传参考音色可克隆，"
+            "长文本建议写清楚说话人描述。"),
+        "lang_map": {"english": "en"},
+    },
+    "confucius4_tts": {
+        "input_hint": (
+            "**Confucius4-TTS**：必须提供参考音色；当前中文/英语路径更可靠，"
+            "非中英语种仍在验证中。"),
+        "lang_map": {
+            "chinese": "zh", "english": "en", "japanese": "ja", "korean": "ko",
+            "french": "fr", "german": "de", "italian": "it", "portuguese": "pt",
+            "russian": "ru", "spanish": "es",
+        },
+        "require_voice": True,
+    },
     "chatterbox": {
         "input_hint": (
             "**Chatterbox** 声音克隆：必须提供参考音色；语言仅支持英/西/法/德/意/葡/韩"
@@ -654,6 +657,15 @@ MODEL_PROFILES = {
         "input_hint": (
             "**Voxtral Mini 4B Realtime**：自动语种转写；支持⚡流式转写，"
             "勾选后按模型原生音频分块边转边出字；不输出时间戳。"),
+        "supports_streaming": True,
+    },
+    "fun_asr_nano": {
+        "input_hint": "**Fun-ASR-Nano**：轻量离线 ASR；支持 auto/中文/英语/日语。",
+    },
+    "parakeet_tdt": {
+        "input_hint": (
+            "**Parakeet-TDT**：离线/长音频/流式 ASR；支持多种欧洲语言，"
+            "留空=自动。"),
         "supports_streaming": True,
     },
     "ace_step": {
@@ -697,6 +709,12 @@ MODEL_PROFILES = {
         "input_hint": (
             "**Seed-VC**：源语音 + 目标音色参考（几秒干净人声）；"
             "默认 v2 路线，v1 旧路线在高级参数切换。"),
+    },
+    "rvc": {
+        "input_hint": (
+            "**RVC**：所选 GGUF 即目标音色；上传源语音即可转换；"
+            "索引/音高等选项可用 JSON 传。"),
+        "send_seed": False,
     },
     "miocodec": {
         "input_hint": "**MioCodec**：codec 重建式转换——源提供内容，参考提供音色。",
@@ -791,14 +809,20 @@ MODEL_HINTS_EN = {
     "voxcpm2": "**VoxCPM2**: upload a clean voice reference and its transcript. Streaming is supported.",
     "qwen3_tts": "**Qwen3-TTS**: a voice reference and matching transcript are recommended.",
     "pocket_tts": "**PocketTTS** requires a voice reference.",
+    "inflect_v2": "**Inflect Micro v2**: English offline TTS. Micro is the default package; Nano can be selected manually.",
+    "dramabox": "**DramaBox**: English TTS and voice clone. Upload a reference voice to clone.",
+    "confucius4_tts": "**Confucius4-TTS** requires a voice reference. Chinese/English are the most reliable paths.",
     "chatterbox": "**Chatterbox** requires a voice reference and supports en/es/fr/de/it/pt/ko.",
     "qwen3_asr": "**Qwen3-ASR** automatically splits long audio. Language and context are optional.",
     "voxtral_realtime": "**Voxtral Mini 4B Realtime** auto-detects language and supports streaming transcription. Timestamps are not exposed.",
+    "fun_asr_nano": "**Fun-ASR-Nano** is a lightweight offline ASR model for auto/zh/en/ja.",
+    "parakeet_tdt": "**Parakeet-TDT** supports offline, long-form and streaming ASR for many European languages.",
     "ace_step": "**ACE-Step**: describe style, instruments and mood. Editing routes require source audio.",
     "stable_audio": "**Stable Audio** accepts English prompts only. Source audio enables init/inpaint.",
     "heartmula": "**HeartMuLa** requires `tags` and lyrics. Estimated peak VRAM is about 25 GB.",
     "vevo2": "**Vevo2**: provide source audio and a target voice. Long audio is split automatically.",
     "seed_vc": "**Seed-VC**: provide source audio and a clean target voice reference.",
+    "rvc": "**RVC**: the selected GGUF is the target voice; upload source speech to convert.",
     "miocodec": "**MioCodec** reconstructs source content with the reference voice.",
     "htdemucs": "**HTDemucs** outputs drums, bass, other and vocals.",
     "mel_band_roformer": "**Mel-Band RoFormer** outputs vocals and accompaniment.",
@@ -1589,10 +1613,13 @@ def _normalize_catalog_from_specs(catalog):
         entry = dict(raw)
         package = _matching_spec_package(entry)
         if package is not None:
+            legacy_download_id = entry.get("download_id")
             entry["download_id"] = package["id"]
-            entry["path"] = "models/" + package["target_directory"]
+            entry["download_path"] = "models/" + package["target_directory"]
             entry["package_format"] = package.get("format")
             entry["package_precision"] = package.get("precision")
+            if legacy_download_id and legacy_download_id != package["id"]:
+                entry["legacy_download_id"] = legacy_download_id
             if package.get("format") == "gguf":
                 _without_legacy_weight_type_options(entry)
         models.append(entry)
@@ -1614,9 +1641,9 @@ def _load_model_params():
 
 def _load_required_files():
     """download_id -> 安装完成后模型目录里必须存在的文件清单（configs/required_files.json，
-    由 model_manager.py CATALOG 的 required_files 预生成，含 .pt->.safetensors 等转换后
-    的最终布局）。用于把“手动拷贝/下载中断的不完整目录”和“已安装”区分开——不完整目录
-    server 端只会报 no registered model loader，用户看不出缺了什么。
+    优先来自 model_specs/ 的 GGUF 包；configs/required_files.json 只保留给已经存在的
+    legacy 本地目录做完整性提示）。用于把“手动拷贝/下载中断的不完整目录”和“已安装”
+    区分开——不完整目录 server 端只会报 no registered model loader，用户看不出缺了什么。
     文件缺失/损坏 -> {}（完整性检查停用，退回“目录存在即已安装”的旧行为）。"""
     required = {pkg_id: list(package["required_files"])
                 for pkg_id, package in SPEC_PACKAGE_BY_ID.items()
@@ -1664,12 +1691,17 @@ _loaded_session_options = None   # 随本次加载写进 server config 的 sessi
 _loaded_mode = None              # 本次加载的运行模式（offline/streaming），None=未加载
 
 
-def _missing_required_files(entry):
+def _resolve_bundle_path(path):
+    ap = path if os.path.isabs(path) else os.path.join(BUNDLE_ROOT, path)
+    return os.path.normpath(ap).replace("\\", "/")
+
+
+def _missing_required_files_for(path, download_id):
     """目录已存在但缺失的必须文件（相对模型目录）；目录不存在或无清单时返回 []。"""
-    req = REQUIRED_FILES.get(entry.get("download_id") or "")
-    if not req or not os.path.isdir(entry["abs_path"]):
+    req = REQUIRED_FILES.get(download_id or "")
+    if not req or not os.path.isdir(path):
         return []
-    return [f for f in req if not os.path.isfile(os.path.join(entry["abs_path"], f))]
+    return [f for f in req if not os.path.isfile(os.path.join(path, f))]
 
 
 def catalog_models():
@@ -1678,13 +1710,29 @@ def catalog_models():
     incomplete（missing_files 列出缺什么），加载入口据此给出明确报错。"""
     out = []
     for m in CATALOG.get("models", []):
-        rel = m.get("path", "")
-        ap = rel if os.path.isabs(rel) else os.path.join(BUNDLE_ROOT, rel)
         entry = dict(m)
-        entry["abs_path"] = os.path.normpath(ap).replace("\\", "/")
-        entry["missing_files"] = _missing_required_files(entry)
+        legacy_path = _resolve_bundle_path(m.get("path", ""))
+        package_path = _resolve_bundle_path(m.get("download_path") or m.get("path", ""))
+        package_missing = _missing_required_files_for(package_path, entry.get("download_id"))
+        legacy_missing = _missing_required_files_for(legacy_path, entry.get("legacy_download_id")
+                                                     or entry.get("download_id"))
+        package_complete = os.path.exists(package_path) and not package_missing
+        legacy_complete = os.path.exists(legacy_path) and not legacy_missing
+        if package_complete:
+            entry["abs_path"] = package_path
+            entry["missing_files"] = []
+        elif legacy_complete:
+            entry["abs_path"] = legacy_path
+            entry["missing_files"] = []
+        elif os.path.exists(package_path):
+            entry["abs_path"] = package_path
+            entry["missing_files"] = package_missing
+        else:
+            entry["abs_path"] = legacy_path if os.path.exists(legacy_path) else package_path
+            entry["missing_files"] = legacy_missing if os.path.exists(legacy_path) else []
         entry["incomplete"] = bool(entry["missing_files"])
-        entry["installed"] = os.path.exists(entry["abs_path"]) and not entry["incomplete"]
+        entry["installed"] = package_complete or legacy_complete
+        entry["download_installed"] = package_complete
         entry["label"] = m.get("display_name") or m.get("id", "?")
         out.append(entry)
     return out
@@ -2391,7 +2439,7 @@ curl {SERVER}/v1/audio/speech -H "Content-Type: application/json" -o out.wav \\
     return _t(content, content, language)
 
 
-# --- background model downloads (via tools/model_manager.py) ----------------
+# --- background model downloads (via model_specs packages) ------------------
 _dl_lock = threading.Lock()
 _downloads = {}  # model_id -> {"proc": Popen, "log": path}
 
@@ -2418,14 +2466,16 @@ def _fmt_bytes(n):
 
 def _staged_bytes(entry):
     """Bytes already on disk for a running download, or None before staging starts.
-    model_manager stages into models/.engine_model_staging/<target>.partial/ and renames
-    on completion; fall back to the whole staging root for composite targets."""
-    staging_root = os.path.join(MODELS_ROOT, ".engine_model_staging")
-    base = os.path.basename(entry.get("path", "").rstrip("/\\"))
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
-    staging = os.path.join(staging_root, safe + ".partial")
-    probe = staging if os.path.isdir(staging) else staging_root
-    return _dir_size_bytes(probe) if os.path.isdir(probe) else None
+    model_manager_v2 stages spec packages as a hidden temp directory directly
+    under models/ and renames it into the final target on completion."""
+    package = SPEC_PACKAGE_BY_ID.get(entry.get("download_id") or "")
+    if package is None:
+        return None
+    safe_target = package.get("target_directory", "").replace("/", "_").replace("\\", "_")
+    probes = sorted(glob.glob(os.path.join(MODELS_ROOT, f".{safe_target}.*")))
+    if not probes:
+        return None
+    return sum(_dir_size_bytes(path) for path in probes if os.path.isdir(path))
 
 
 def _download_progress_note(entry):
@@ -2504,39 +2554,14 @@ DISK_FREE_ALARM_BYTES = 20 * 1000 ** 3
 MEMORY_USAGE_ALARM = 0.80
 
 
-def _model_manager_module():
-    """Import tools/model_manager.py for catalog metadata (sizes), or None.
-
-    Imported lazily and only for read-only lookups: installs still run it as a
-    subprocess, so the WebUI process never carries its download/convert dependencies."""
-    tools_dir = os.path.join(PROJECT_ROOT, "tools")
-    if os.path.isdir(tools_dir) and tools_dir not in sys.path:
-        sys.path.insert(0, tools_dir)
-    try:
-        import model_manager
-        return model_manager
-    except Exception as exc:
-        print(f"[webui] model_manager import failed ({exc}); download sizes unavailable")
-        return None
-
-
-def _snapshot_sources(mm, source):
-    """The SnapshotSources a package downloads from; empty for converter installs."""
-    if isinstance(source, mm.SnapshotSource):
-        return [source]
-    if isinstance(source, mm.CompositeSnapshotSource):
-        return [placement.source for placement in source.placements]
-    return []
-
-
 def package_download_bytes(download_id):
     """Total remote size of everything `download_id` fetches, or None if unknown.
 
     Read live from the Hugging Face tree API rather than stored in the catalog: a
     hand-copied size goes stale the moment a repo is reuploaded, and models_catalog.json
     already carries more hand-maintained facts than is comfortable. Unknown (None) for
-    converter installs, unreachable repos, and gated repos without a token — callers
-    must treat it as "no information", never as zero."""
+    unreachable repos and gated repos without a token — callers must treat it as
+    "no information", never as zero."""
     if not download_id:
         return None
     with _dl_size_lock:
@@ -2572,20 +2597,9 @@ def package_download_bytes(download_id):
         with _dl_size_lock:
             _dl_size_cache[download_id] = total
         return total
-    mm = _model_manager_module()
-    total = None
-    if mm is not None:
-        package = mm.PACKAGE_BY_ID.get(download_id)
-        sources = _snapshot_sources(mm, package.source) if package else []
-        try:
-            sizes = [size for source in sources for _remote, _local, size in mm.list_hf_files(source)]
-            # A repo listing without sizes would understate the total; say nothing instead.
-            total = sum(sizes) if sizes and all(size is not None for size in sizes) else None
-        except Exception as exc:
-            print(f"[webui] could not read the download size of {download_id}: {exc}")
     with _dl_size_lock:
-        _dl_size_cache[download_id] = total
-    return total
+        _dl_size_cache[download_id] = None
+    return None
 
 
 def _disk_usage(path):
@@ -2755,23 +2769,27 @@ def download_requirements(entry):
 
 
 def download_model(model_id, hf_token="", proxy=""):
-    """Kick off `model_manager.py install <download_id>` in the background."""
+    """Kick off `model_manager_v2.py install <download_id>` in the background."""
     if not model_id:
         return _t("❌ 请先选择一个模型", "❌ Select a model first.")
     entry = catalog_by_id(model_id)
     if entry is None:
         return _t("❌ catalog 里没有模型 id：{model}",
                   "❌ Model id not found: {model}", model=model_id)
-    if entry["installed"]:
-        return _t("✅ {label} 已安装，无需下载", "✅ {label} is already installed.",
+    if entry.get("download_installed", entry["installed"]):
+        return _t("✅ {label} 的下载包已安装，无需重新下载",
+                  "✅ {label}'s download package is already installed.",
                   label=entry["label"])
     dl_id = entry.get("download_id")
     if not dl_id:
         return _t("⚠️ {label} 没有 download_id，请手动安装。",
                   "⚠️ {label} has no download_id; install it manually.", label=entry["label"])
-    if MODEL_MANAGER is None:
-        return _t("❌ 找不到 tools/model_manager.py",
-                  "❌ tools/model_manager.py was not found.")
+    if dl_id not in SPEC_PACKAGE_BY_ID:
+        return _t("❌ {label} 没有 model_specs GGUF 下载包。",
+                  "❌ {label} has no model_specs GGUF download package.", label=entry["label"])
+    if SPEC_MODEL_MANAGER is None:
+        return _t("❌ 找不到 webui/model_manager_webui.py",
+                  "❌ webui/model_manager_webui.py was not found.")
 
     # Pass a token to the child so gated/private HF repos don't 401.
     env = os.environ.copy()
@@ -2816,10 +2834,13 @@ def download_model(model_id, hf_token="", proxy=""):
                       label=entry["label"], tail=_read_tail(rec["log"]))
         log = _dl_log_path(model_id)
         logf = open(log, "w", encoding="utf-8", errors="replace")
-        proc = subprocess.Popen(
-            [sys.executable, "-u", MODEL_MANAGER, "install", dl_id,
-             "--models-root", MODELS_ROOT, "--overwrite"],
-            cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-u", SPEC_MODEL_MANAGER, "install", dl_id,
+                 "--models-root", MODELS_ROOT, "--overwrite"],
+                cwd=PROJECT_ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env)
+        finally:
+            logf.close()
         _downloads[model_id] = {"proc": proc, "log": log}
     _ui_log(_t("开始后台下载 {label}（{dl_id}），日志：{log}",
                "started background download {label} ({dl_id}), log: {log}",
@@ -2835,10 +2856,15 @@ def download_status(model_id):
     entry = catalog_by_id(model_id) if model_id else None
     if entry is None:
         return ""
-    if entry["installed"]:
-        return _t("✅ {label} 已安装", "✅ {label} is installed.", label=entry["label"])
     rec = _downloads.get(model_id)
     if rec is None:
+        if entry.get("download_installed", entry["installed"]):
+            return _t("✅ {label} 的下载包已安装",
+                      "✅ {label}'s download package is installed.", label=entry["label"])
+        if entry["installed"]:
+            return _t("✅ {label} 可从已有本地模型加载；如需默认 GGUF 包，请重新下载。",
+                      "✅ {label} can load from existing local files; re-download to install "
+                      "the default GGUF package.", label=entry["label"])
         # Nothing has been fetched yet, so this is the one place to state the cost
         # while it can still change the user's mind. The size probe is a network call,
         # which is why it hangs off this button rather than off selecting a model.
@@ -2887,14 +2913,20 @@ def _download_running(model_id):
 
 def _download_blockers(entry, model_id):
     """Why this entry cannot be downloaded right now, or "" if it can."""
-    if entry["installed"]:
-        return _t("✅ {label} 已安装，无需下载", "✅ {label} is already installed.",
+    if entry.get("download_installed", entry["installed"]):
+        return _t("✅ {label} 的下载包已安装，无需重新下载",
+                  "✅ {label}'s download package is already installed.",
                   label=entry["label"])
     if not entry.get("download_id"):
         return _t("⚠️ {label} 没有 download_id，请手动安装。",
                   "⚠️ {label} has no download_id; install it manually.", label=entry["label"])
-    if MODEL_MANAGER is None:
-        return _t("❌ 找不到 tools/model_manager.py", "❌ tools/model_manager.py was not found.")
+    if entry.get("download_id") not in SPEC_PACKAGE_BY_ID:
+        return _t("⚠️ {label} 没有 model_specs GGUF 下载包，请手动安装。",
+                  "⚠️ {label} has no model_specs GGUF download package; install it manually.",
+                  label=entry["label"])
+    if SPEC_MODEL_MANAGER is None:
+        return _t("❌ 找不到 webui/model_manager_webui.py",
+                  "❌ webui/model_manager_webui.py was not found.")
     if _download_running(model_id):
         return _t("⏳ {label} 已在后台下载中…", "⏳ {label} is already downloading…",
                   label=entry["label"])
@@ -2998,16 +3030,6 @@ def _gguf_entry(model_id, require_installed=True):
     return entry, ""
 
 
-def _gguf_output_path(entry):
-    """Where a WebUI conversion writes its GGUF. Always model.gguf — the name the
-    C++ loader picks first when a directory holds more than one."""
-    model_path = entry["abs_path"]
-    if os.path.isfile(model_path) and model_path.lower().endswith(".gguf"):
-        return model_path
-    root = model_path if os.path.isdir(model_path) else os.path.dirname(model_path)
-    return os.path.join(root, "model.gguf")
-
-
 def _existing_gguf_path(entry):
     """The GGUF this entry would actually load, or None.
 
@@ -3032,79 +3054,19 @@ def _existing_gguf_path(entry):
     return os.path.join(model_path, found[0]) if len(found) == 1 else None
 
 
-def _gguf_tensor_entrypoint(model_dir):
-    """Return a single-file or sharded safetensors entry point in model_dir."""
-    for name in ("model.safetensors.index.json", "model.safetensors"):
-        candidate = os.path.join(model_dir, name)
-        if os.path.isfile(candidate):
-            return candidate
-    return None
-
-
-def _gguf_conversion_inputs(entry):
-    """Build the converter's ordered (namespace, weights) input list."""
-    if entry["family"] not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
-        return []
-
-    model_path = entry["abs_path"]
-    if os.path.isfile(model_path):
-        lower = model_path.lower()
-        if lower.endswith(".safetensors") or lower.endswith(".safetensors.index.json"):
-            return [("", model_path)]
-        return []
-
-    # Qwen3-TTS is a composite package. Its GGUF package spec requires both
-    # tensor sources under the exact namespaces below.
-    if entry["family"] == "qwen3_tts":
-        model_weights = _gguf_tensor_entrypoint(model_path)
-        speech_weights = _gguf_tensor_entrypoint(os.path.join(model_path, "speech_tokenizer"))
-        if model_weights and speech_weights:
-            return [
-                ("model_weights", model_weights),
-                ("speech_tokenizer_weights", speech_weights),
-            ]
-        return []
-
-    source = _gguf_tensor_entrypoint(model_path)
-    return [("", source)] if source else []
-
-
-def _gguf_conversion_unavailable(entry):
-    family = entry["family"]
-    if family not in GGUF_NATIVE_FAMILIES:
-        return _t("当前模型后端暂不支持原生 GGUF。",
-                  "This model backend does not currently support native GGUF.")
-    if family not in GGUF_WEBUI_CONVERTIBLE_FAMILIES:
-        return _t("当前复合模型暂不能在 WebUI 自动转换。",
-                  "This composite model cannot yet be converted automatically in the WebUI.")
-    return ""
-
-
 def gguf_status(model_id):
     entry, error = _gguf_entry(model_id, require_installed=False)
     if entry is None:
         return f"⚪ {error}"
-    # Report a GGUF that is already there before anything about converting one:
-    # downloaded GGUF packages are exactly the entries the WebUI cannot convert,
-    # and they used to read as "this model cannot be converted" instead.
     existing = _existing_gguf_path(entry)
     if existing is not None:
         return _t("🧊 已有GGUF（`{name}`），将优先加载该模型。",
                   "🧊 GGUF is available (`{name}`) and will be loaded first.",
                   name=os.path.basename(existing))
-    unavailable = _gguf_conversion_unavailable(entry)
-    if unavailable:
-        return f"⚠️ {unavailable}"
-    if not entry["installed"]:
-        return _t("🧊 可转换，但模型未完整安装。",
-                  "🧊 Convertible, but the model is not fully installed.")
-    converter = _find_gguf_exe()
-    if converter is None:
-        return _t("⚠️ 找不到转换器。", "⚠️ Converter not found.")
-    inputs = _gguf_conversion_inputs(entry)
-    if not inputs:
-        return _t("⚠️ 未找到可转换的模型权重。", "⚠️ No convertible model weights found.")
-    return _t("🧊 可转换。", "🧊 Ready to convert.")
+    if entry.get("download_id") in SPEC_PACKAGE_BY_ID:
+        return _t("🧊 下载将安装 model_specs 中声明的 GGUF 包。",
+                  "🧊 Download will install the GGUF package declared in model_specs.")
+    return _t("⚠️ 暂无 GGUF；请手动安装。", "⚠️ No GGUF yet; install it manually.")
 
 
 def _gguf_inspection_summary(output, text):
@@ -3160,111 +3122,6 @@ def inspect_gguf(model_id):
         return _t("❌ 检查失败（exit {code}）。", "❌ Inspection failed (exit {code}).", code=result.returncode)
     _ui_log(_t("检查 GGUF：{output}", "checking GGUF: {output}", output=output))
     return _gguf_inspection_summary(output, result.stdout)
-
-
-def convert_model_to_gguf(model_id, weight_type, progress=gr.Progress()):
-    entry, error = _gguf_entry(model_id)
-    if entry is None:
-        return f"❌ {error}"
-    unavailable = _gguf_conversion_unavailable(entry)
-    if unavailable:
-        return f"❌ {unavailable}"
-    # Guard on any GGUF already in the directory, not just model.gguf: converting
-    # next to a downloaded release-named one would leave the loader two candidates
-    # and no way to choose between them.
-    if _existing_gguf_path(entry) is not None:
-        return _t("⚠️ GGUF 已存在；请先检查或删除。", "⚠️ GGUF already exists; inspect or delete it first.")
-    output = _gguf_output_path(entry)
-    converter = _find_gguf_exe()
-    if converter is None:
-        return _t("❌ 找不到 `{name}`；已检查开发构建和 portable 的 gpu/cpu 目录。",
-                  "❌ {name} was not found in development or portable gpu/cpu paths.", name=GGUF_EXE_NAME)
-    inputs = _gguf_conversion_inputs(entry)
-    if not inputs:
-        return _t("❌ 未找到可自动转换的模型权重。", "❌ No convertible model weights found.")
-    if weight_type not in GGUF_TYPES:
-        return _t("❌ 不支持的 GGUF 类型：{type}", "❌ Unsupported GGUF type: {type}", type=weight_type)
-
-    root = entry["abs_path"] if os.path.isdir(entry["abs_path"]) else os.path.dirname(inputs[0][1])
-    cmd = [converter]
-    for namespace, source in inputs:
-        cmd.extend(["--input", f"{namespace}={source}" if namespace else source])
-    cmd.extend(["--root", root, "--output", output,
-                "--type", weight_type, "--family", entry["family"]])
-    progress(0, desc=_t("正在转换 GGUF…", "Converting GGUF…"))
-    _ui_log(_t("开始转换 GGUF：{label} ({weight_type})",
-               "converting GGUF: {label} ({weight_type})",
-               label=entry['label'], weight_type=weight_type))
-    try:
-        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=7200)
-    except subprocess.TimeoutExpired:
-        return _t("❌ GGUF 转换超过 2 小时，已停止。", "❌ GGUF conversion exceeded two hours and was stopped.")
-    except Exception as exc:
-        return _t("❌ 无法启动 GGUF 转换：{error}", "❌ Could not start GGUF conversion: {error}", error=exc)
-
-    if result.returncode != 0 or not os.path.isfile(output):
-        _ui_log(_t("GGUF 转换失败：{label} (exit {code})",
-                   "GGUF conversion failed: {label} (exit {code})",
-                   label=entry['label'], code=result.returncode))
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        details = []
-        if stdout:
-            details.append(f"stdout:\n{stdout}")
-        if stderr:
-            details.append(f"stderr:\n{stderr}")
-        process_output = "\n\n".join(details) or _t("（转换器没有输出）", "(The converter produced no output.)")
-        return _t(
-            "❌ 转换失败（exit {code}）。\n\n命令：\n```text\n{command}\n```\n\n详细信息：\n```text\n{output}\n```",
-            "❌ Conversion failed (exit {code}).\n\nCommand:\n```text\n{command}\n```\n\nDetails:\n```text\n{output}\n```",
-            code=result.returncode, command=subprocess.list2cmdline(cmd), output=process_output)
-
-    stopped = False
-    with _proc_lock:
-        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
-            _stop_server()
-            stopped = True
-    _ui_log(_t("GGUF 转换完成：{label} → {output}",
-               "GGUF conversion done: {label} → {output}",
-               label=entry['label'], output=output))
-    stop_note = (_t("请点『加载模型』。", "Click Load.")
-                 if stopped else
-                 _t("点『加载模型』即可。", "Click Load to use it."))
-    return _t("✅ 转换成功。{note}", "✅ Conversion complete. {note}", note=stop_note)
-
-
-def delete_gguf(model_id):
-    entry, error = _gguf_entry(model_id)
-    if entry is None:
-        return f"❌ {error}", server_status()
-    output = _existing_gguf_path(entry)
-    if output is None:
-        return _t("⚠️ 暂无 GGUF。", "⚠️ No GGUF to delete."), server_status()
-    # This button removes conversion output. A GGUF listed in the package's
-    # required_files is the downloaded model itself — deleting it here would look
-    # like discarding a cache and instead uninstall a multi-GB download.
-    packaged = REQUIRED_FILES.get(entry.get("download_id") or "") or []
-    if os.path.basename(output) in {os.path.basename(f) for f in packaged}:
-        return _t("⚠️ `{name}` 是下载的 GGUF 模型包，不是转换产物；请用模型列表重新下载/删除。",
-                  "⚠️ `{name}` is the downloaded GGUF package, not conversion output. "
-                  "Manage it from the model list instead.",
-                  name=os.path.basename(output)), server_status()
-    with _proc_lock:
-        if _loaded_id == model_id and _server_proc is not None and _server_proc.poll() is None:
-            _stop_server()
-        elif server_alive() and model_id in loaded_ids():
-            return _t("⚠️ 外部 server 正在使用该 GGUF；请先关闭它再删除。",
-                      "⚠️ An external server is using this GGUF. Stop it before deleting."), server_status()
-    temporary = output + ".tmp"
-    try:
-        os.remove(output)
-        if os.path.isfile(temporary):
-            os.remove(temporary)
-    except OSError as exc:
-        return _t("❌ 删除 GGUF 失败：{error}", "❌ Could not delete GGUF: {error}", error=exc), server_status()
-    _ui_log(_t("删除 GGUF：{output}", "deleting GGUF: {output}", output=output))
-    return _t("✅ 已删除：`{path}`", "✅ Deleted: `{path}`", path=output), server_status()
 
 
 # --- task handlers ---------------------------------------------------------
@@ -4118,9 +3975,12 @@ def do_vc(model, source_audio, target_upload, builtin_voice, seed,
         options = _merged_options(prof, adv_values, adv_options)
 
         source_audio = _ensure_wav(source_audio)
-        # 同一 seed 用于所有分段，保证各段结果一致可复现。
-        seed, seed_note = _resolve_seed(seed)
-        req = {"seed": seed}
+        seed_note = ""
+        req = {}
+        if prof.get("send_seed", True):
+            # 同一 seed 用于所有分段，保证各段结果一致可复现。
+            seed, seed_note = _resolve_seed(seed)
+            req["seed"] = seed
         voice_path = target_upload or (
             os.path.join(PROMPTS_DIR, builtin_voice)
             if builtin_voice and builtin_voice != "(none)" else None)
@@ -4652,7 +4512,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
 
     # ---- 每个标签页共用的“模型管理”卡片、接线与高级参数渲染 ----
     def _model_manager_block(task_label, tasks):
-        """标准“模型管理”卡片：模型下拉、加载/下载与 GGUF 操作 + 状态区。
+        """标准“模型管理”卡片：模型下拉、加载/下载与 GGUF 检查 + 状态区。
         返回组件 dict；接线见 _wire_model_manager（刷新按钮统一接在文件末尾）。"""
         choices = choices_for_tasks(tasks)
         with gr.Group():
@@ -4671,8 +4531,8 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     gr.Button("🔄 刷新列表", variant="primary", size="lg", min_width=100),
                     value=("🔄 刷新列表", "🔄 Refresh"))
                 dl_btn = _localized(
-                    gr.Button("⬇️ 下载模型", variant="primary", size="lg", min_width=100),
-                    value=("⬇️ 下载模型", "⬇️\u00a0Download"))
+                    gr.Button("⬇️ (Re) 下载", variant="primary", size="lg", min_width=100),
+                    value=("⬇️ (Re) 下载", "⬇️\u00a0(Re) Download"))
                 dl_stat_btn = _localized(
                     gr.Button("📊 下载进度", variant="primary", size="lg", min_width=100),
                     value=("📊 下载进度", "📊 Progress"))
@@ -4681,41 +4541,30 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
                     value=("🧹 释放显存", "🧹 Unload"))
             load_status = gr.Markdown("")
             dl_status = gr.Markdown("")
-            # Hidden until "⬇️ Download" has stated what the download costs; a
+            # Hidden until "⬇️ (Re) Download" has stated what the download costs; a
             # multi-GB fetch is not something a single click should commit to.
             with gr.Row(elem_classes="mm-btn-row"):
                 dl_confirm_btn = _localized(
-                    gr.Button("✅ 确认下载", variant="primary", size="lg",
+                    gr.Button("✅ 确认 (Re) 下载", variant="primary", size="lg",
                               min_width=100, visible=False),
-                    value=("✅ 确认下载", "✅ Confirm download"))
+                    value=("✅ 确认 (Re) 下载", "✅ Confirm (Re) Download"))
                 dl_cancel_btn = _localized(
                     gr.Button("✖️ 取消", variant="secondary", size="lg",
                               min_width=100, visible=False),
                     value=("✖️ 取消", "✖️ Cancel"))
-            with _localized(gr.Accordion("🧊 GGUF 工具（转换 / 检查 / 删除）", open=False),
-                            label=("🧊 GGUF 工具（转换 / 检查 / 删除）",
-                                   "🧊 GGUF tools (convert / inspect / delete)")):
+            with _localized(gr.Accordion("🧊 GGUF 检查", open=False),
+                            label=("🧊 GGUF 检查", "🧊 GGUF inspect")):
                 with gr.Row(elem_classes="mm-btn-row gguf-btn-row"):
-                    gguf_type = _localized(gr.Dropdown(
-                        label="类型", show_label=False, choices=list(GGUF_TYPES), value="q8_0", scale=1, min_width=80),
-                        label=("类型", "Type"))
-                    gguf_convert_btn = _localized(
-                        gr.Button("🧊 转换", variant="secondary", scale=1, min_width=90),
-                        value=("🧊 转换", "🧊 Convert"))
                     gguf_inspect_btn = _localized(
                         gr.Button("🔎 检查", variant="secondary", scale=1, min_width=90),
                         value=("🔎 检查", "🔎 Inspect"))
-                    gguf_delete_btn = _localized(
-                        gr.Button("🗑️ 删除", variant="stop", scale=1, min_width=90),
-                        value=("🗑️ 删除", "🗑️ Delete"))
                 gguf_message = gr.Markdown(gguf_status(model.value))
             timer = gr.Timer(3, active=False)
         return {"model": model, "load_btn": load_btn, "refresh_btn": refresh_btn,
                 "dl_btn": dl_btn, "dl_stat_btn": dl_stat_btn, "unload_btn": unload_btn,
                 "dl_confirm_btn": dl_confirm_btn, "dl_cancel_btn": dl_cancel_btn,
                 "load_status": load_status, "dl_status": dl_status, "timer": timer,
-                "gguf_type": gguf_type, "gguf_convert_btn": gguf_convert_btn,
-                "gguf_inspect_btn": gguf_inspect_btn, "gguf_delete_btn": gguf_delete_btn,
+                "gguf_inspect_btn": gguf_inspect_btn,
                 "gguf_status": gguf_message}
 
     def _wire_model_manager(mm, tasks, hint):
@@ -4737,10 +4586,7 @@ with gr.Blocks(title="audio.cpp WebUI") as demo:
         # refresh on completion are all in scope.
         mm["dl_stat_btn"].click(download_status, mm["model"], mm["dl_status"])
         mm["unload_btn"].click(unload_model, None, [mm["load_status"], status])
-        mm["gguf_convert_btn"].click(convert_model_to_gguf,
-                                      [mm["model"], mm["gguf_type"]], mm["gguf_status"])
         mm["gguf_inspect_btn"].click(inspect_gguf, mm["model"], mm["gguf_status"])
-        mm["gguf_delete_btn"].click(delete_gguf, mm["model"], [mm["gguf_status"], status])
         mm["model"].change(model_hint_for, mm["model"], hint)
         mm["model"].change(gguf_status, mm["model"], mm["gguf_status"])
 

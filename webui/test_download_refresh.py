@@ -71,5 +71,48 @@ class InstallStateLabelTests(unittest.TestCase):
         self.assertIn("incomplete", self._label())
 
 
+class LoadPathSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="audiocpp_webui_load_path_test_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.legacy = os.path.join(self.root, "VoxCPM2")
+        self.package = os.path.join(self.root, "VoxCPM2-GGUF")
+        self.entry = {
+            "id": "voxcpm2", "family": "voxcpm2", "task": "tts", "mode": "offline",
+            "display_name": "VoxCPM2", "display_name_en": "VoxCPM2",
+            "path": self.legacy, "download_path": self.package,
+            "download_id": "voxcpm2_q8_0", "legacy_download_id": "voxcpm2",
+        }
+        self.original_catalog = app.CATALOG
+        self.original_required = app.REQUIRED_FILES
+        app.CATALOG = {"models": [self.entry]}
+        app.REQUIRED_FILES = {
+            "voxcpm2": ["config.json", "model.safetensors"],
+            "voxcpm2_q8_0": ["voxcpm2-q8_0.gguf"],
+        }
+        self.addCleanup(setattr, app, "CATALOG", self.original_catalog)
+        self.addCleanup(setattr, app, "REQUIRED_FILES", self.original_required)
+
+    def _touch(self, root, *names):
+        os.makedirs(root, exist_ok=True)
+        for name in names:
+            open(os.path.join(root, name), "w").close()
+
+    def test_existing_tensor_install_is_still_loadable(self):
+        self._touch(self.legacy, "config.json", "model.safetensors")
+        entry = app.catalog_by_id("voxcpm2")
+        self.assertTrue(entry["installed"])
+        self.assertFalse(entry["download_installed"])
+        self.assertEqual(entry["abs_path"], os.path.normpath(self.legacy).replace("\\", "/"))
+
+    def test_gguf_package_wins_when_both_are_installed(self):
+        self._touch(self.legacy, "config.json", "model.safetensors")
+        self._touch(self.package, "voxcpm2-q8_0.gguf")
+        entry = app.catalog_by_id("voxcpm2")
+        self.assertTrue(entry["installed"])
+        self.assertTrue(entry["download_installed"])
+        self.assertEqual(entry["abs_path"], os.path.normpath(self.package).replace("\\", "/"))
+
+
 if __name__ == "__main__":
     unittest.main()

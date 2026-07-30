@@ -145,6 +145,13 @@
         ],
         "required": false,
         "default": "off"
+      },
+      {
+        "name": "mem_saver",
+        "type": "bool",
+        "description": "Release staged runtime graphs and weights immediately after each request phase to reduce peak and resident VRAM; default false keeps components cached for later reuse.",
+        "required": false,
+        "default": false
       }
     ],
     "load": []
@@ -167,17 +174,6 @@
       "target_directory": "DramaBox-GGUF",
       "files": [
         "DramaBox-GGUF/dramabox-q8_0.gguf"
-      ],
-      "strip_prefix": "DramaBox-GGUF"
-    },
-    {
-      "id": "dramabox_orig",
-      "display_name": "DramaBox Original-Dtype GGUF",
-      "format": "gguf",
-      "precision": "orig",
-      "target_directory": "DramaBox-GGUF",
-      "files": [
-        "DramaBox-GGUF/dramabox-orig.gguf"
       ],
       "strip_prefix": "DramaBox-GGUF"
     }

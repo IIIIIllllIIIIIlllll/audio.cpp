@@ -5,9 +5,10 @@
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/linear_module.h"
+#include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
-#include "engine/framework/modules/streaming_conv_modules.h"
 #include "engine/framework/modules/structural_modules.h"
+#include "engine/framework/modules/zipformer_modules.h"
 
 #include <ggml-backend.h>
 #include <ggml.h>
@@ -15,10 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cmath>
-#include <cstring>
 #include <memory>
-#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -79,11 +77,6 @@ struct LayerStateValue {
     core::TensorValue conv2;
 };
 
-struct AttentionResult {
-    std::vector<core::TensorValue> weights;
-    core::TensorValue key;
-};
-
 struct ValueResult {
     core::TensorValue output;
     core::TensorValue state;
@@ -112,24 +105,6 @@ const Param & param(
             "missing Kroko Zipformer tensor: " + name);
     }
     return it->second;
-}
-
-core::TensorShape shape_of(const std::vector<int64_t> & dims) {
-    switch (dims.size()) {
-        case 1:
-            return core::TensorShape::from_dims({dims[0]});
-        case 2:
-            return core::TensorShape::from_dims({dims[0], dims[1]});
-        case 3:
-            return core::TensorShape::from_dims(
-                {dims[0], dims[1], dims[2]});
-        case 4:
-            return core::TensorShape::from_dims(
-                {dims[0], dims[1], dims[2], dims[3]});
-        default:
-            throw std::runtime_error(
-                "Kroko Zipformer tensor rank is unsupported");
-    }
 }
 
 core::TensorValue contiguous(
@@ -176,32 +151,6 @@ core::TensorValue transpose(
         input.type);
 }
 
-core::TensorValue add(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & lhs,
-    const core::TensorValue & rhs) {
-    return modules::AddModule().build(context, lhs, rhs);
-}
-
-core::TensorValue sub(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & lhs,
-    const core::TensorValue & rhs) {
-    const auto a = contiguous(context, lhs);
-    const auto b = contiguous(context, rhs);
-    return core::wrap_tensor(
-        ggml_sub(context.ggml, a.tensor, b.tensor),
-        lhs.shape,
-        GGML_TYPE_F32);
-}
-
-core::TensorValue mul(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & lhs,
-    const core::TensorValue & rhs) {
-    return modules::MulModule().build(context, lhs, rhs);
-}
-
 core::TensorValue scale(
     core::ModuleBuildContext & context,
     const core::TensorValue & input,
@@ -213,53 +162,15 @@ core::TensorValue scale(
         GGML_TYPE_F32);
 }
 
-core::TensorValue scale_bias(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & input,
-    float factor,
-    float bias) {
-    const auto source = contiguous(context, input);
-    return core::wrap_tensor(
-        ggml_scale_bias(
-            context.ggml, source.tensor, factor, bias),
-        input.shape,
-        GGML_TYPE_F32);
-}
-
-core::TensorValue swoosh(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & input,
-    float offset,
-    float constant) {
-    auto shifted = scale_bias(context, input, 1.0F, -offset);
-    auto result = core::wrap_tensor(
-        ggml_softplus(context.ggml, shifted.tensor),
-        input.shape,
-        GGML_TYPE_F32);
-    result = add(context, result, scale(context, input, -0.08F));
-    return scale_bias(context, result, 1.0F, constant);
-}
-
-core::TensorValue swoosh_l(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & input) {
-    return swoosh(context, input, 4.0F, -0.035F);
-}
-
-core::TensorValue swoosh_r(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & input) {
-    return swoosh(
-        context, input, 1.0F, -0.313261687F);
-}
-
 core::TensorValue linear(
     core::ModuleBuildContext & context,
     const core::TensorValue & input,
     const std::unordered_map<std::string, Param> & params,
     const std::string & prefix) {
-    const auto & weight = param(params, prefix + ".weight");
-    const auto & bias = param(params, prefix + ".bias");
+    const std::string weight_name = prefix + ".weight";
+    const std::string bias_name = prefix + ".bias";
+    const auto & weight = param(params, weight_name);
+    const auto & bias = param(params, bias_name);
     if (weight.shape.size() != 2 ||
         weight.shape[1] != input.shape.last_dim()) {
         throw std::runtime_error(
@@ -273,115 +184,62 @@ core::TensorValue linear(
             {weight.tensor, bias.tensor});
 }
 
-core::TensorValue repeat_last_scale(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & channel_scale,
-    const core::TensorValue & target) {
-    std::vector<int64_t> view_dims(target.shape.rank, 1);
-    view_dims.back() = target.shape.last_dim();
-    auto view = core::reshape_tensor(
-        context, channel_scale, shape_of(view_dims));
-    return modules::RepeatModule({target.shape}).build(
-        context, view);
-}
-
-core::TensorValue bypass(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & original,
-    const core::TensorValue & transformed,
-    const Param & bypass_scale) {
-    return add(
-        context,
-        original,
-        mul(
-            context,
-            sub(context, transformed, original),
-            repeat_last_scale(
-                context, bypass_scale.tensor, original)));
-}
-
-core::TensorValue bias_norm(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & input,
+modules::ZipformerLinearWeights zipformer_linear_weights(
     const std::unordered_map<std::string, Param> & params,
     const std::string & prefix) {
-    const auto & bias = param(params, prefix + ".bias");
-    const auto & log_scale = param(params, prefix + ".log_scale");
-    if (log_scale.host.size() != 1) {
-        throw std::runtime_error(
-            "Kroko BiasNorm scale is unavailable: " + prefix);
-    }
-    std::vector<int64_t> bias_dims(input.shape.rank, 1);
-    bias_dims.back() = input.shape.last_dim();
-    auto bias_view = core::reshape_tensor(
-        context, bias.tensor, shape_of(bias_dims));
-    auto bias_repeated =
-        modules::RepeatModule({input.shape}).build(
-            context, bias_view);
-    auto centered = sub(context, input, bias_repeated);
-    auto squared = core::wrap_tensor(
-        ggml_sqr(context.ggml, centered.tensor),
-        centered.shape,
-        GGML_TYPE_F32);
-    auto mean = modules::ReduceMeanModule(
-        {static_cast<int>(input.shape.rank - 1)})
-                    .build(context, squared);
-    auto denominator = core::wrap_tensor(
-        ggml_sqrt(context.ggml, mean.tensor),
-        mean.shape,
-        GGML_TYPE_F32);
-    auto denominator_repeated =
-        modules::RepeatModule({input.shape}).build(
-            context, denominator);
-    auto normalized = core::wrap_tensor(
-        ggml_div(
-            context.ggml,
-            input.tensor,
-            denominator_repeated.tensor),
-        input.shape,
-        GGML_TYPE_F32);
-    return scale(
-        context,
-        normalized,
-        std::exp(log_scale.host.front()));
+    return {
+        param(params, prefix + ".weight").tensor,
+        param(params, prefix + ".bias").tensor,
+    };
 }
 
-std::vector<float> compact_relative_position(
-    int64_t seq,
-    int64_t left_context) {
-    constexpr float pi = 3.14159265358979323846F;
-    const int64_t length = left_context + 2 * seq - 1;
-    std::vector<float> result(
-        static_cast<size_t>(length * kPosDim), 0.0F);
-    const float compression = std::sqrt(
-        static_cast<float>(kPosDim));
-    const float length_scale =
-        static_cast<float>(kPosDim) / (2.0F * pi);
-    for (int64_t row = 0; row < length; ++row) {
-        const float x =
-            static_cast<float>(
-                row - (left_context + seq - 1));
-        const float sign =
-            x < 0.0F ? -1.0F : (x > 0.0F ? 1.0F : 0.0F);
-        const float compressed =
-            compression * sign *
-            (std::log(std::fabs(x) + compression) -
-             std::log(compression));
-        const float angle =
-            std::atan(compressed / length_scale);
-        for (int64_t dim = 0; dim < kPosDim / 2; ++dim) {
-            const float frequency = static_cast<float>(dim + 1);
-            result[static_cast<size_t>(
-                row * kPosDim + 2 * dim)] =
-                std::cos(angle * frequency);
-            result[static_cast<size_t>(
-                row * kPosDim + 2 * dim + 1)] =
-                std::sin(angle * frequency);
-        }
-        result[static_cast<size_t>(
-            row * kPosDim + kPosDim - 1)] = 1.0F;
-    }
-    return result;
+modules::DepthwiseConv1dWeights zipformer_depthwise_conv_weights(
+    const std::unordered_map<std::string, Param> & params,
+    const std::string & prefix) {
+    return {
+        param(params, prefix + ".weight").tensor,
+        param(params, prefix + ".bias").tensor,
+    };
+}
+
+modules::ZipformerRelativeAttentionWeights relative_attention_weights(
+    const std::unordered_map<std::string, Param> & params,
+    const std::string & prefix) {
+    return {
+        zipformer_linear_weights(
+            params,
+            prefix + ".self_attn_weights.in_proj"),
+        param(params, prefix + ".self_attn_weights.linear_pos.weight").host,
+    };
+}
+
+modules::ZipformerNonlinearAttentionWeights nonlinear_attention_weights(
+    const std::unordered_map<std::string, Param> & params,
+    const std::string & prefix) {
+    const std::string base = prefix + ".nonlin_attention";
+    return {
+        zipformer_linear_weights(params, base + ".in_proj"),
+        zipformer_linear_weights(params, base + ".out_proj"),
+    };
+}
+
+modules::ZipformerConvolutionWeights convolution_weights(
+    const std::unordered_map<std::string, Param> & params,
+    const std::string & prefix,
+    const std::string & module) {
+    const std::string base = prefix + "." + module;
+    return {
+        zipformer_linear_weights(params, base + ".in_proj"),
+        zipformer_depthwise_conv_weights(
+            params,
+            base + ".depthwise_conv.causal_conv"),
+        zipformer_depthwise_conv_weights(
+            params,
+            base + ".depthwise_conv.chunkwise_conv"),
+        param(params, base + ".depthwise_conv.chunk_scale_left").host,
+        param(params, base + ".depthwise_conv.chunk_scale_right").host,
+        zipformer_linear_weights(params, base + ".out_proj"),
+    };
 }
 
 core::TensorValue graph_constant(
@@ -414,121 +272,6 @@ StateTensor state_tensor(
     result.input = result.value.tensor;
     ggml_set_input(result.input);
     result.host.assign(element_count(shape), 0.0F);
-    return result;
-}
-
-AttentionResult attention_weights(
-    core::ModuleBuildContext & context,
-    std::vector<GraphConstant> & constants,
-    const core::TensorValue & input,
-    const core::TensorValue & cached_key,
-    const core::TensorValue & padding_mask,
-    const std::unordered_map<std::string, Param> & params,
-    const std::string & prefix,
-    int64_t heads,
-    int64_t query_dim) {
-    const int64_t seq = input.shape.dims[0];
-    const int64_t left_context = cached_key.shape.dims[0];
-    const int64_t source_frames = left_context + seq;
-    auto projected = linear(
-        context,
-        input,
-        params,
-        prefix + ".self_attn_weights.in_proj");
-    const auto & position_weight = param(
-        params,
-        prefix + ".self_attn_weights.linear_pos.weight");
-    if (position_weight.host.empty()) {
-        throw std::runtime_error(
-            "Kroko relative position weight is unavailable");
-    }
-    auto current_key = modules::SliceModule(
-        {2, heads * query_dim, heads * query_dim})
-                           .build(context, projected);
-    auto all_keys = modules::ConcatModule({0}).build(
-        context, cached_key, current_key);
-    AttentionResult result;
-    result.key = modules::SliceModule(
-        {0, seq, left_context})
-                     .build(context, all_keys);
-    const auto position =
-        compact_relative_position(seq, left_context);
-    result.weights.reserve(static_cast<size_t>(heads));
-    for (int64_t head = 0; head < heads; ++head) {
-        auto query = modules::SliceModule(
-            {2, head * query_dim, query_dim})
-                         .build(context, projected);
-        auto key = modules::SliceModule(
-            {2, head * query_dim, query_dim})
-                       .build(context, all_keys);
-        auto position_query = modules::SliceModule(
-            {2,
-             2 * heads * query_dim + head * kPosHeadDim,
-             kPosHeadDim})
-                                  .build(context, projected);
-        query = transpose(context, query, {1, 0, 2, 3});
-        key = transpose(context, key, {1, 2, 0, 3});
-        auto scores =
-            modules::MatMulModule().build(context, query, key);
-        position_query = transpose(
-            context, position_query, {1, 0, 2, 3});
-        core::TensorValue position_scores;
-        for (int64_t dim = 0; dim < kPosHeadDim; ++dim) {
-            std::vector<float> table(
-                static_cast<size_t>(seq * source_frames), 0.0F);
-            const int64_t output_row =
-                head * kPosHeadDim + dim;
-            for (int64_t target = 0; target < seq; ++target) {
-                for (int64_t source = 0;
-                     source < source_frames;
-                     ++source) {
-                    const int64_t relative =
-                        (seq - 1 - target) + source;
-                    double value = 0.0;
-                    for (int64_t p = 0; p < kPosDim; ++p) {
-                        value +=
-                            static_cast<double>(
-                                position[static_cast<size_t>(
-                                    relative * kPosDim + p)]) *
-                            static_cast<double>(
-                                position_weight.host[
-                                    static_cast<size_t>(
-                                        output_row * kPosDim + p)]);
-                    }
-                    table[static_cast<size_t>(
-                        target * source_frames + source)] =
-                        static_cast<float>(value);
-                }
-            }
-            auto relative = graph_constant(
-                context,
-                constants,
-                core::TensorShape::from_dims(
-                    {1, seq, source_frames}),
-                std::move(table));
-            auto query_dim_value = modules::SliceModule(
-                {2, dim, 1})
-                                       .build(
-                                           context,
-                                           position_query);
-            auto repeated =
-                modules::RepeatModule(
-                    {core::TensorShape::from_dims(
-                        {1, seq, source_frames})})
-                    .build(context, query_dim_value);
-            auto term = mul(context, repeated, relative);
-            position_scores = position_scores.valid()
-                ? add(context, position_scores, term)
-                : term;
-        }
-        result.weights.push_back(
-            modules::SoftmaxModule().build(
-                context,
-                add(
-                    context,
-                    add(context, scores, position_scores),
-                    padding_mask)));
-    }
     return result;
 }
 
@@ -585,195 +328,12 @@ core::TensorValue feed_forward(
         input,
         params,
         prefix + "." + module + ".in_proj");
-    result = swoosh_l(context, result);
+    result = modules::SwooshLModule().build(context, result);
     return linear(
         context,
         result,
         params,
         prefix + "." + module + ".out_proj");
-}
-
-ValueResult nonlin_attention(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & input,
-    const core::TensorValue & attention,
-    const core::TensorValue & cached_value,
-    const std::unordered_map<std::string, Param> & params,
-    const std::string & prefix) {
-    const std::string base = prefix + ".nonlin_attention";
-    auto projected =
-        linear(context, input, params, base + ".in_proj");
-    const int64_t hidden = projected.shape.last_dim() / 3;
-    auto gate_input =
-        modules::SliceModule({2, 0, hidden})
-            .build(context, projected);
-    auto value =
-        modules::SliceModule({2, hidden, hidden})
-            .build(context, projected);
-    auto output_gate =
-        modules::SliceModule({2, 2 * hidden, hidden})
-            .build(context, projected);
-    value = mul(
-        context,
-        value,
-        modules::TanhModule().build(context, gate_input));
-    const int64_t seq = value.shape.dims[0];
-    const int64_t left_context = cached_value.shape.dims[0];
-    value = modules::ConcatModule({0}).build(
-        context, cached_value, value);
-    auto new_state = modules::SliceModule(
-        {0, seq, left_context})
-                         .build(context, value);
-    auto joined = transpose(context, value, {1, 0, 2, 3});
-    joined = modules::MatMulModule().build(
-        context, attention, joined);
-    joined = transpose(context, joined, {1, 0, 2, 3});
-    return {
-        linear(
-            context,
-            mul(context, joined, output_gate),
-            params,
-            base + ".out_proj"),
-        new_state};
-}
-
-core::TensorValue pad_left_1d(
-    core::ModuleBuildContext & context,
-    const core::TensorValue & input,
-    int64_t amount) {
-    std::array<int32_t, 4> left = {0, 0, 0, 0};
-    std::array<int32_t, 4> right = {0, 0, 0, 0};
-    left[core::logical_axis_to_ggml_axis(3, 2)] =
-        static_cast<int32_t>(amount);
-    const auto source = contiguous(context, input);
-    auto shape = input.shape;
-    shape.dims[2] += amount;
-    return core::wrap_tensor(
-        ggml_pad_ext(
-            context.ggml,
-            source.tensor,
-            left[0],
-            right[0],
-            left[1],
-            right[1],
-            left[2],
-            right[2],
-            left[3],
-            right[3]),
-        shape,
-        GGML_TYPE_F32);
-}
-
-ValueResult convolution_module(
-    core::ModuleBuildContext & context,
-    std::vector<GraphConstant> & constants,
-    const core::TensorValue & input,
-    const core::TensorValue & cached_value,
-    const std::unordered_map<std::string, Param> & params,
-    const std::string & prefix,
-    const std::string & module,
-    int64_t kernel) {
-    const std::string base = prefix + "." + module;
-    const int64_t channels = input.shape.last_dim();
-    auto projected =
-        linear(context, input, params, base + ".in_proj");
-    auto value =
-        modules::SliceModule({2, 0, channels})
-            .build(context, projected);
-    auto gate =
-        modules::SliceModule({2, channels, channels})
-            .build(context, projected);
-    value = mul(
-        context,
-        value,
-        modules::SigmoidModule().build(context, gate));
-    auto channel_first =
-        transpose(context, value, {1, 2, 0, 3});
-    const int64_t left_pad = kernel / 2;
-    auto causal_input = modules::ConcatModule({2}).build(
-        context, cached_value, channel_first);
-    auto new_state = contiguous(
-        context,
-        modules::SliceModule(
-            {2, input.shape.dims[0], left_pad})
-            .build(context, causal_input));
-    const auto & causal_weight = param(
-        params,
-        base + ".depthwise_conv.causal_conv.weight");
-    const auto & causal_bias = param(
-        params,
-        base + ".depthwise_conv.causal_conv.bias");
-    auto causal =
-        modules::DepthwiseConv1dModule(
-            {channels, left_pad + 1, 1, 0, 1, true})
-        .build(
-            context,
-            causal_input,
-            {causal_weight.tensor, causal_bias.tensor});
-    const auto & chunk_weight = param(
-        params,
-        base + ".depthwise_conv.chunkwise_conv.weight");
-    const auto & chunk_bias = param(
-        params,
-        base + ".depthwise_conv.chunkwise_conv.bias");
-    auto chunk = modules::DepthwiseConv1dModule(
-        {channels, kernel, 1, static_cast<int>(left_pad), 1, true})
-                     .build(
-                         context,
-                         channel_first,
-                         {chunk_weight.tensor, chunk_bias.tensor});
-    const auto & left = param(
-        params,
-        base + ".depthwise_conv.chunk_scale_left");
-    const auto & right = param(
-        params,
-        base + ".depthwise_conv.chunk_scale_right");
-    if (left.host.size() !=
-            static_cast<size_t>(channels * kernel) ||
-        right.host.size() !=
-            static_cast<size_t>(channels * kernel)) {
-        throw std::runtime_error(
-            "Kroko chunk convolution scales are invalid");
-    }
-    const int64_t seq = input.shape.dims[0];
-    std::vector<float> chunk_scale(
-        static_cast<size_t>(channels * seq), 1.0F);
-    for (int64_t channel = 0; channel < channels; ++channel) {
-        for (int64_t frame = 0; frame < seq; ++frame) {
-            float edge = 0.0F;
-            if (seq < kernel) {
-                edge += left.host[static_cast<size_t>(
-                    channel * kernel + frame)];
-                edge += right.host[static_cast<size_t>(
-                    channel * kernel + kernel - seq + frame)];
-            } else {
-                if (frame < kernel) {
-                    edge += left.host[static_cast<size_t>(
-                        channel * kernel + frame)];
-                }
-                if (frame >= seq - kernel) {
-                    edge += right.host[static_cast<size_t>(
-                        channel * kernel + frame - (seq - kernel))];
-                }
-            }
-            chunk_scale[static_cast<size_t>(
-                channel * seq + frame)] += edge;
-        }
-    }
-    auto scale_tensor = graph_constant(
-        context,
-        constants,
-        core::TensorShape::from_dims({1, channels, seq}),
-        std::move(chunk_scale));
-    auto combined = add(
-        context, causal, mul(context, chunk, scale_tensor));
-    combined = transpose(
-        context, combined, {2, 0, 1, 3});
-    combined = swoosh_r(context, combined);
-    return {
-        linear(
-            context, combined, params, base + ".out_proj"),
-        new_state};
 }
 
 LayerResult zipformer_layer(
@@ -789,29 +349,40 @@ LayerResult zipformer_layer(
     int64_t value_dim,
     int64_t kernel) {
     const auto original = input;
-    const auto attention = attention_weights(
+    modules::ZipformerConstantFactory constant_factory =
+        [&](const core::TensorShape & shape, std::vector<float> values) {
+            return graph_constant(
+                context,
+                constants,
+                shape,
+                std::move(values));
+        };
+    const auto attention =
+        modules::ZipformerRelativeAttentionModule({
+            heads,
+            query_dim,
+            kPosDim,
+            kPosHeadDim,
+        }).build(
         context,
-        constants,
+        constant_factory,
         input,
         state.key,
         padding_mask,
-        params,
-        prefix,
-        heads,
-        query_dim);
-    auto output = add(
+        relative_attention_weights(params, prefix));
+    auto output = modules::AddModule().build(
         context,
         input,
         feed_forward(
             context, input, params, prefix, "feed_forward1"));
-    const auto nonlinear = nonlin_attention(
+    const auto nonlinear =
+        modules::ZipformerNonlinearAttentionModule().build(
         context,
         output,
         attention.weights.front(),
         state.nonlin,
-        params,
-        prefix);
-    output = add(
+        nonlinear_attention_weights(params, prefix));
+    output = modules::AddModule().build(
         context, output, nonlinear.output);
     const auto attention1 = self_attention(
         context,
@@ -823,29 +394,27 @@ LayerResult zipformer_layer(
         "self_attn1",
         heads,
         value_dim);
-    output = add(
+    output = modules::AddModule().build(
         context, output, attention1.output);
-    const auto convolution1 = convolution_module(
+    const auto convolution1 =
+        modules::ZipformerConvolutionModule({kernel}).build(
         context,
-        constants,
+        constant_factory,
         output,
         state.conv1,
-        params,
-        prefix,
-        "conv_module1",
-        kernel);
-    output = add(
+        convolution_weights(params, prefix, "conv_module1"));
+    output = modules::AddModule().build(
         context, output, convolution1.output);
-    output = add(
+    output = modules::AddModule().build(
         context,
         output,
         feed_forward(
             context, output, params, prefix, "feed_forward2"));
-    output = bypass(
+    output = modules::ScaledBypassModule().build(
         context,
         original,
         output,
-        param(params, prefix + ".bypass_mid.bypass_scale"));
+        param(params, prefix + ".bypass_mid.bypass_scale").tensor);
     const auto attention2 = self_attention(
         context,
         output,
@@ -856,34 +425,42 @@ LayerResult zipformer_layer(
         "self_attn2",
         heads,
         value_dim);
-    output = add(
+    output = modules::AddModule().build(
         context, output, attention2.output);
-    const auto convolution2 = convolution_module(
+    const auto convolution2 =
+        modules::ZipformerConvolutionModule({kernel}).build(
         context,
-        constants,
+        constant_factory,
         output,
         state.conv2,
-        params,
-        prefix,
-        "conv_module2",
-        kernel);
-    output = add(
+        convolution_weights(params, prefix, "conv_module2"));
+    output = modules::AddModule().build(
         context, output, convolution2.output);
-    output = add(
+    output = modules::AddModule().build(
         context,
         output,
         feed_forward(
             context, output, params, prefix, "feed_forward3"));
-    output = bias_norm(
-        context, output, params, prefix + ".norm");
+    const std::string norm_bias_name = prefix + ".norm.bias";
+    const std::string norm_log_scale_name = prefix + ".norm.log_scale";
+    const auto & norm_bias = param(params, norm_bias_name);
+    const auto & norm_log_scale = param(params, norm_log_scale_name);
+    if (norm_log_scale.host.size() != 1) {
+        throw std::runtime_error(
+            "Kroko BiasNorm scale is unavailable: " + prefix + ".norm");
+    }
+    output = modules::BiasNormModule({output.shape.last_dim()}).build(
+        context,
+        output,
+        {norm_bias.tensor, norm_log_scale.host.front()});
     return {
-        bypass(
+        modules::ScaledBypassModule().build(
             context,
             original,
             output,
-            param(params, prefix + ".bypass.bypass_scale")),
+            param(params, prefix + ".bypass.bypass_scale").tensor),
         {
-            attention.key,
+            attention.key_state,
             nonlinear.state,
             attention1.state,
             attention2.state,
@@ -955,7 +532,7 @@ core::TensorValue downsample(
                 context,
                 row,
                 weights.host[static_cast<size_t>(index)]);
-            sum = sum.valid() ? add(context, sum, row) : row;
+            sum = sum.valid() ? modules::AddModule().build(context, sum, row) : row;
         }
         rows.push_back(sum);
     }
@@ -1151,7 +728,7 @@ public:
                     current,
                     factor,
                     stack_input.shape.dims[0]);
-                current = bypass(
+                current = modules::ScaledBypassModule().build(
                     build,
                     stack_input,
                     current,
@@ -1159,7 +736,7 @@ public:
                         params,
                         "encoder.encoder.encoders." +
                             std::to_string(stack) +
-                            ".out_combiner.bypass_scale"));
+                            ".out_combiner.bypass_scale").tensor);
             }
             stack_outputs.push_back(current);
         }

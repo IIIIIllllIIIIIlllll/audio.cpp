@@ -4,12 +4,7 @@
 #include "engine/framework/core/backend_weight_store.h"
 #include "engine/framework/core/execution_context.h"
 #include "engine/framework/debug/profiler.h"
-#include "engine/framework/modules/activation_modules.h"
-#include "engine/framework/modules/attention/grouped_query_attention.h"
-#include "engine/framework/modules/lookup_modules.h"
 #include "engine/framework/modules/norm_modules.h"
-#include "engine/framework/modules/optimizations/fast_projection_modules.h"
-#include "engine/framework/modules/positional_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
 
@@ -31,6 +26,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kGemmaPromptWeightContextBytes = 28ull * 1024ull * 1024ull * 1024ull;
+constexpr size_t kGemmaPromptAggregateWeightContextBytes = 1024ull * 1024ull * 1024ull;
 constexpr float kFeatureRmsNormEps = 1.0e-6F;
 constexpr float kMaskNegInf = -std::numeric_limits<float>::max();
 
@@ -51,30 +47,6 @@ const assets::TensorSource & source_for(
         }
     }
     throw std::runtime_error("missing DramaBox Gemma tensor: " + std::string(name));
-}
-
-modules::LinearWeights load_gemma_linear(
-    core::BackendWeightStore & store,
-    const DramaBoxAssets & assets,
-    const std::string & name,
-    assets::TensorStorageType storage_type,
-    int64_t out_features,
-    int64_t in_features) {
-    const std::string weight_name = name + ".weight";
-    const auto & source = source_for(assets.gemma_weights, weight_name);
-    return {
-        store.load_tensor(source, weight_name, storage_type, {out_features, in_features}),
-        std::nullopt,
-    };
-}
-
-core::TensorValue load_gemma_tensor(
-    core::BackendWeightStore & store,
-    const DramaBoxAssets & assets,
-    const std::string & name,
-    assets::TensorStorageType storage_type,
-    std::initializer_list<int64_t> expected_shape) {
-    return store.load_tensor(source_for(assets.gemma_weights, name), name, storage_type, expected_shape);
 }
 
 std::vector<modules::LinearWeights> load_aggregate_layers(
@@ -108,223 +80,31 @@ std::vector<modules::LinearWeights> load_aggregate_layers(
     return layers;
 }
 
-DramaBoxGemma3LayerWeights load_layer(
-    core::BackendWeightStore & store,
-    const DramaBoxAssets & assets,
-    int64_t layer,
-    assets::TensorStorageType storage_type) {
-    const auto prefix = "language_model.model.layers." + std::to_string(layer);
-    const auto & config = assets.config.gemma;
-    DramaBoxGemma3LayerWeights weights;
-    const auto & input_norm_source = source_for(assets.gemma_weights, prefix + ".input_layernorm.weight");
-    weights.input_norm = input_norm_source.require_tensor_data(prefix + ".input_layernorm.weight").metadata.dtype == "BF16"
-        ? store.load_tensor(input_norm_source, prefix + ".input_layernorm.weight", assets::TensorStorageType::BF16, {config.hidden_size})
-        : store.load_f32_tensor(input_norm_source, prefix + ".input_layernorm.weight", {config.hidden_size});
-    weights.post_attention_norm = load_gemma_tensor(
-        store,
-        assets,
-        prefix + ".post_attention_layernorm.weight",
-        assets::TensorStorageType::Native,
-        {config.hidden_size});
-    weights.pre_feedforward_norm = load_gemma_tensor(
-        store,
-        assets,
-        prefix + ".pre_feedforward_layernorm.weight",
-        assets::TensorStorageType::Native,
-        {config.hidden_size});
-    weights.post_feedforward_norm = load_gemma_tensor(
-        store,
-        assets,
-        prefix + ".post_feedforward_layernorm.weight",
-        assets::TensorStorageType::Native,
-        {config.hidden_size});
-    weights.q_norm = load_gemma_tensor(
-        store,
-        assets,
-        prefix + ".self_attn.q_norm.weight",
-        assets::TensorStorageType::Native,
-        {config.head_dim});
-    weights.k_norm = load_gemma_tensor(
-        store,
-        assets,
-        prefix + ".self_attn.k_norm.weight",
-        assets::TensorStorageType::Native,
-        {config.head_dim});
-    weights.q_proj = load_gemma_linear(
-        store,
-        assets,
-        prefix + ".self_attn.q_proj",
-        storage_type,
-        config.num_attention_heads * config.head_dim,
-        config.hidden_size);
-    weights.k_proj = load_gemma_linear(
-        store,
-        assets,
-        prefix + ".self_attn.k_proj",
-        storage_type,
-        config.num_key_value_heads * config.head_dim,
-        config.hidden_size);
-    weights.v_proj = load_gemma_linear(
-        store,
-        assets,
-        prefix + ".self_attn.v_proj",
-        storage_type,
-        config.num_key_value_heads * config.head_dim,
-        config.hidden_size);
-    weights.o_proj = load_gemma_linear(
-        store,
-        assets,
-        prefix + ".self_attn.o_proj",
-        storage_type,
-        config.hidden_size,
-        config.num_attention_heads * config.head_dim);
-    weights.gate_proj = load_gemma_linear(
-        store,
-        assets,
-        prefix + ".mlp.gate_proj",
-        storage_type,
-        config.intermediate_size,
-        config.hidden_size);
-    weights.up_proj = load_gemma_linear(
-        store,
-        assets,
-        prefix + ".mlp.up_proj",
-        storage_type,
-        config.intermediate_size,
-        config.hidden_size);
-    weights.down_proj = load_gemma_linear(
-        store,
-        assets,
-        prefix + ".mlp.down_proj",
-        storage_type,
-        config.hidden_size,
-        config.intermediate_size);
-    return weights;
+modules::GemmaDecoderStackConfig gemma_decoder_config(const DramaBoxGemma3Config & config) {
+    modules::GemmaDecoderStackConfig out;
+    out.hidden_size = config.hidden_size;
+    out.layers = config.num_hidden_layers;
+    out.attention_heads = config.num_attention_heads;
+    out.kv_heads = config.num_key_value_heads;
+    out.head_dim = config.head_dim;
+    out.intermediate_size = config.intermediate_size;
+    out.vocab_size = config.vocab_size;
+    out.sliding_window_pattern = config.sliding_window_pattern;
+    out.rope_theta = config.rope_theta;
+    out.local_rope_theta = config.rope_local_base_freq;
+    out.rope_freq_scale = 1.0F / config.rope_scaling_factor;
+    out.rms_norm_eps = config.rms_norm_eps;
+    out.query_pre_attn_scalar = config.query_pre_attn_scalar;
+    out.scale_embeddings = true;
+    out.use_fast_cuda_projection = true;
+    return out;
 }
 
-core::TensorValue linear_projection(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const modules::LinearWeights & weights,
-    int64_t in_features,
-    int64_t out_features) {
-    const bool dense_weight =
-        weights.weight.type == GGML_TYPE_F32 || weights.weight.type == GGML_TYPE_F16 || weights.weight.type == GGML_TYPE_BF16;
-    const ggml_prec precision = ggml_is_quantized(weights.weight.type) ? GGML_PREC_DEFAULT : GGML_PREC_F32;
-    if (ctx.backend_type == core::BackendType::Cuda && dense_weight && out_features >= 128 && out_features % 4 == 0) {
-        return modules::FastPackedProjection4Module({in_features, out_features, precision})
-            .build(ctx, input, weights);
-    }
-    return modules::LinearModule({in_features, out_features, false, precision}).build(ctx, input, weights);
-}
-
-core::TensorValue cast_f32(core::ModuleBuildContext & ctx, const core::TensorValue & input) {
-    if (input.type == GGML_TYPE_F32 && input.tensor->type == GGML_TYPE_F32) {
-        return input;
-    }
-    return core::wrap_tensor(
-        ggml_cast(ctx.ggml, core::ensure_backend_addressable_layout(ctx, input).tensor, GGML_TYPE_F32),
-        input.shape,
-        GGML_TYPE_F32);
-}
-
-core::TensorValue grouped_attention_from_heads(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & q_heads,
-    const core::TensorValue & k_heads,
-    const core::TensorValue & v_heads,
-    const core::TensorValue & additive_attention_mask,
-    const DramaBoxGemma3Config & config) {
-    if (config.query_pre_attn_scalar != static_cast<float>(config.head_dim)) {
-        throw std::runtime_error("DramaBox Gemma grouped attention requires query_pre_attn_scalar == head_dim");
-    }
-    return modules::GroupedQueryAttentionModule({
-        config.head_dim,
-        ctx.backend_type == core::BackendType::Cuda
-            ? modules::GroupedQueryAttentionLowering::FlashGrouped
-            : modules::GroupedQueryAttentionLowering::ManualRepeat,
-        GGML_PREC_F32,
-        modules::AttentionCausality::NonCausal,
-    }).build(ctx, q_heads, k_heads, v_heads, additive_attention_mask);
-}
-
-core::TensorValue self_attention(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const core::TensorValue & positions,
-    const core::TensorValue & additive_attention_mask,
-    const DramaBoxGemma3LayerWeights & weights,
-    const DramaBoxGemma3Config & config,
-    int64_t layer_index) {
-    auto q = linear_projection(ctx, input, weights.q_proj, config.hidden_size, config.num_attention_heads * config.head_dim);
-    auto k = linear_projection(ctx, input, weights.k_proj, config.hidden_size, config.num_key_value_heads * config.head_dim);
-    auto v = linear_projection(ctx, input, weights.v_proj, config.hidden_size, config.num_key_value_heads * config.head_dim);
-    const modules::GemmaRMSNormModule head_norm({config.head_dim, config.rms_norm_eps, true, false});
-    q = head_norm.build(
-        ctx,
-        core::reshape_tensor(
-            ctx,
-            core::ensure_backend_addressable_layout(ctx, q),
-            core::TensorShape::from_dims({q.shape.dims[0], q.shape.dims[1], config.num_attention_heads, config.head_dim})),
-        {weights.q_norm, std::nullopt});
-    k = head_norm.build(
-        ctx,
-        core::reshape_tensor(
-            ctx,
-            core::ensure_backend_addressable_layout(ctx, k),
-            core::TensorShape::from_dims({k.shape.dims[0], k.shape.dims[1], config.num_key_value_heads, config.head_dim})),
-        {weights.k_norm, std::nullopt});
-    v = core::reshape_tensor(
-        ctx,
-        core::ensure_backend_addressable_layout(ctx, v),
-        core::TensorShape::from_dims({v.shape.dims[0], v.shape.dims[1], config.num_key_value_heads, config.head_dim}));
-    const bool full_attention_layer =
-        config.sliding_window_pattern > 0 && ((layer_index + 1) % config.sliding_window_pattern) == 0;
-    const float rope_theta = full_attention_layer ? config.rope_theta : config.rope_local_base_freq;
-    const float rope_freq_scale = full_attention_layer ? (1.0F / config.rope_scaling_factor) : 1.0F;
-    q = modules::RoPEModule({config.head_dim, GGML_ROPE_TYPE_NEOX, rope_theta, rope_freq_scale}).build(ctx, q, positions);
-    k = modules::RoPEModule({config.head_dim, GGML_ROPE_TYPE_NEOX, rope_theta, rope_freq_scale}).build(ctx, k, positions);
-    auto q_heads = modules::TransposeModule({{0, 2, 1, 3}, q.shape.rank}).build(ctx, q);
-    core::TensorValue context;
-    auto k_heads = modules::TransposeModule({{0, 2, 1, 3}, k.shape.rank}).build(ctx, k);
-    auto v_heads = modules::TransposeModule({{0, 2, 1, 3}, v.shape.rank}).build(ctx, v);
-    context = grouped_attention_from_heads(ctx, q_heads, k_heads, v_heads, additive_attention_mask, config);
-    context = core::reshape_tensor(
-        ctx,
-        core::ensure_backend_addressable_layout(ctx, context),
-        core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], config.num_attention_heads * config.head_dim}));
-    return linear_projection(ctx, context, weights.o_proj, config.num_attention_heads * config.head_dim, config.hidden_size);
-}
-
-core::TensorValue mlp(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const DramaBoxGemma3LayerWeights & weights,
-    const DramaBoxGemma3Config & config) {
-    auto gate = linear_projection(ctx, input, weights.gate_proj, config.hidden_size, config.intermediate_size);
-    gate = modules::GeluModule({modules::GeluApproximation::Tanh}).build(ctx, gate);
-    auto up = linear_projection(ctx, input, weights.up_proj, config.hidden_size, config.intermediate_size);
-    auto hidden = modules::MulModule{}.build(ctx, gate, up);
-    return linear_projection(ctx, hidden, weights.down_proj, config.intermediate_size, config.hidden_size);
-}
-
-core::TensorValue layer(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const core::TensorValue & positions,
-    const core::TensorValue & additive_attention_mask,
-    const DramaBoxGemma3LayerWeights & weights,
-    const DramaBoxGemma3Config & config,
-    int64_t layer_index) {
-    const modules::GemmaRMSNormModule norm({config.hidden_size, config.rms_norm_eps, true, false});
-    auto hidden = norm.build(ctx, input, {weights.input_norm, std::nullopt});
-    hidden = self_attention(ctx, hidden, positions, additive_attention_mask, weights, config, layer_index);
-    hidden = norm.build(ctx, hidden, {weights.post_attention_norm, std::nullopt});
-    auto output = modules::AddModule{}.build(ctx, input, hidden);
-    hidden = norm.build(ctx, output, {weights.pre_feedforward_norm, std::nullopt});
-    hidden = mlp(ctx, hidden, weights, config);
-    hidden = norm.build(ctx, hidden, {weights.post_feedforward_norm, std::nullopt});
-    return modules::AddModule{}.build(ctx, output, hidden);
+modules::GemmaDecoderWeightBinding dramabox_gemma_binding(assets::TensorStorageType storage_type) {
+    modules::GemmaDecoderWeightBinding binding;
+    binding.model_prefix = "language_model.model";
+    binding.projection_storage_type = storage_type;
+    return binding;
 }
 
 core::TensorValue aggregate_hidden(
@@ -352,12 +132,9 @@ core::TensorValue aggregate_hidden(
                       static_cast<float>(hidden_size))),
         normalized.shape,
         GGML_TYPE_F32);
-    auto contribution = linear_projection(
-        ctx,
-        normalized,
-        weights.aggregate_layers.at(static_cast<size_t>(hidden_index)),
-        hidden_size,
-        output_size);
+    const auto & projection = weights.aggregate_layers.at(static_cast<size_t>(hidden_index));
+    const ggml_prec precision = ggml_is_quantized(projection.weight.type) ? GGML_PREC_DEFAULT : GGML_PREC_F32;
+    auto contribution = modules::LinearModule({hidden_size, output_size, false, precision}).build(ctx, normalized, projection);
     if (!accumulated.valid()) {
         return contribution;
     }
@@ -418,28 +195,21 @@ DramaBoxGemma3PromptWeights load_dramabox_gemma3_prompt_weights(
     assets::TensorStorageType gemma_weight_storage_type,
     assets::TensorStorageType projection_weight_storage_type) {
     DramaBoxGemma3PromptWeights weights;
+    const auto & config = assets.config.gemma;
+    weights.encoder = modules::GemmaDecoderComponent::load_from_resolver(
+        backend,
+        backend_type,
+        gemma_decoder_config(config),
+        dramabox_gemma_binding(gemma_weight_storage_type),
+        weight_context_bytes == 0 ? kGemmaPromptWeightContextBytes : weight_context_bytes,
+        [&assets](std::string_view name) -> const assets::TensorSource & {
+            return source_for(assets.gemma_weights, name);
+        });
     weights.store = std::make_shared<core::BackendWeightStore>(
         backend,
         backend_type,
-        "dramabox.gemma3_prompt.weights",
-        weight_context_bytes == 0 ? kGemmaPromptWeightContextBytes : weight_context_bytes);
-    const auto & config = assets.config.gemma;
-    const auto & embed_source = source_for(assets.gemma_weights, "language_model.model.embed_tokens.weight");
-    weights.embed_tokens = weights.store->load_tensor(
-        embed_source,
-        "language_model.model.embed_tokens.weight",
-        assets::TensorStorageType::Native,
-        {config.vocab_size, config.hidden_size});
-    weights.layers.reserve(static_cast<size_t>(config.num_hidden_layers));
-    for (int64_t layer_index = 0; layer_index < config.num_hidden_layers; ++layer_index) {
-        weights.layers.push_back(load_layer(*weights.store, assets, layer_index, gemma_weight_storage_type));
-    }
-    const auto & norm_source = source_for(assets.gemma_weights, "language_model.model.norm.weight");
-    weights.norm = weights.store->load_tensor(
-        norm_source,
-        "language_model.model.norm.weight",
-        assets::TensorStorageType::Native,
-        {config.hidden_size});
+        "dramabox.gemma3_prompt.aggregate_weights",
+        kGemmaPromptAggregateWeightContextBytes);
     const std::string aggregate_prefix = "text_embedding_projection.audio_aggregate_embed";
     weights.aggregate_layers = load_aggregate_layers(
         *weights.store,
@@ -466,34 +236,28 @@ core::TensorValue build_dramabox_gemma3_prompt_encoder(
     const core::TensorValue & hidden_attention_mask,
     const DramaBoxGemma3PromptWeights & weights,
     const DramaBoxConfig & config) {
-    if (static_cast<int64_t>(weights.layers.size()) != config.gemma.num_hidden_layers) {
+    if (weights.encoder.config().layers != config.gemma.num_hidden_layers) {
         throw std::runtime_error("DramaBox Gemma3 layer count mismatch");
     }
-    auto hidden = modules::EmbeddingModule({config.gemma.vocab_size, config.gemma.hidden_size})
-        .build(ctx, input_ids, weights.embed_tokens);
-    hidden = core::wrap_tensor(
-        ggml_scale(ctx.ggml, cast_f32(ctx, hidden).tensor, std::sqrt(static_cast<float>(config.gemma.hidden_size))),
-        hidden.shape,
-        GGML_TYPE_F32);
     core::TensorValue accumulated;
-    accumulated = aggregate_hidden(ctx, accumulated, hidden, hidden_attention_mask, weights, config, 0);
-    for (int64_t layer_index = 0; layer_index < config.gemma.num_hidden_layers; ++layer_index) {
-        hidden = layer(
+    const auto encoder_outputs = weights.encoder.build(
+        ctx,
+        input_ids,
+        positions,
+        additive_attention_mask,
+        true);
+    if (static_cast<int64_t>(encoder_outputs.captured_hidden_states.size()) != config.gemma.num_hidden_layers + 1) {
+        throw std::runtime_error("DramaBox Gemma3 captured hidden state count mismatch");
+    }
+    for (int64_t hidden_index = 0; hidden_index <= config.gemma.num_hidden_layers; ++hidden_index) {
+        accumulated = aggregate_hidden(
             ctx,
-            hidden,
-            positions,
-            additive_attention_mask,
-            weights.layers[static_cast<size_t>(layer_index)],
-            config.gemma,
-            layer_index);
-        auto captured = hidden;
-        if (layer_index + 1 == config.gemma.num_hidden_layers) {
-            captured = modules::GemmaRMSNormModule({config.gemma.hidden_size, config.gemma.rms_norm_eps, true, false}).build(
-                ctx,
-                hidden,
-                {weights.norm, std::nullopt});
-        }
-        accumulated = aggregate_hidden(ctx, accumulated, captured, hidden_attention_mask, weights, config, layer_index + 1);
+            accumulated,
+            encoder_outputs.captured_hidden_states[static_cast<size_t>(hidden_index)],
+            hidden_attention_mask,
+            weights,
+            config,
+            hidden_index);
     }
     auto bias = core::reshape_tensor(
         ctx,
@@ -525,9 +289,6 @@ public:
         if (max_batch_ <= 0) {
             throw std::runtime_error("DramaBox Gemma prompt max_batch must be positive");
         }
-        for (const auto & source : assets_->gemma_weights) {
-            source->release_storage();
-        }
         build();
     }
 
@@ -553,7 +314,6 @@ public:
         if (tokens.tokens != config.gemma.prompt_max_length) {
             throw std::runtime_error("DramaBox Gemma prompt token length mismatch");
         }
-        const auto input_start = Clock::now();
         std::vector<int32_t> padded_ids(static_cast<size_t>(max_batch_ * tokens.tokens), 0);
         for (int64_t b = 0; b < tokens.batch; ++b) {
             std::copy_n(
@@ -563,8 +323,13 @@ public:
         }
         core::write_tensor_i32(input_ids_, padded_ids);
         core::write_tensor_i32(positions_, positions(tokens.tokens));
-        const bool use_flash_attention = backend_type_ == core::BackendType::Cuda;
+        const bool use_flash_attention = true;
         const int64_t mask_heads = use_flash_attention ? 1 : config.gemma.num_attention_heads;
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.batch", tokens.batch);
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.max_batch", max_batch_);
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.tokens", tokens.tokens);
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.flash_attention", use_flash_attention);
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.mask_heads", mask_heads);
         const auto attention_mask = make_causal_key_padding_mask(tokens, max_batch_, mask_heads, use_flash_attention);
         if (use_flash_attention) {
             core::write_tensor_f16(attention_mask_, attention_mask);
@@ -573,15 +338,11 @@ public:
         }
         core::write_tensor_f32(hidden_attention_mask_, make_hidden_attention_mask(tokens, max_batch_));
         core::set_backend_threads(backend_, threads_);
-        engine::debug::timing_log_scalar("dramabox.gemma_prompt.input_upload_ms", engine::debug::elapsed_ms(input_start, Clock::now()));
-        const auto compute_start = Clock::now();
         const ggml_status status = engine::core::compute_backend_graph(backend_, graph_, nullptr, "dramabox.gemma_prompt");
         if (status != GGML_STATUS_SUCCESS) {
             throw std::runtime_error("DramaBox Gemma prompt graph compute failed");
         }
         ggml_backend_synchronize(backend_);
-        engine::debug::timing_log_scalar("dramabox.gemma_prompt.graph.compute_ms", engine::debug::elapsed_ms(compute_start, Clock::now()));
-        const auto output_start = Clock::now();
         const auto full = core::read_tensor_f32(output_);
         DramaBoxPromptEncoding out;
         out.batch = tokens.batch;
@@ -596,7 +357,6 @@ public:
                 static_cast<size_t>(row_values),
                 out.audio_features.data() + static_cast<std::ptrdiff_t>(b * row_values));
         }
-        engine::debug::timing_log_scalar("dramabox.gemma_prompt.output_read_ms", engine::debug::elapsed_ms(output_start, Clock::now()));
         engine::debug::timing_log_scalar("dramabox.gemma_prompt.total_ms", engine::debug::elapsed_ms(total_start, Clock::now()));
         return out;
     }
@@ -605,6 +365,9 @@ private:
     void build() {
         const auto build_start = Clock::now();
         const auto & config = assets_->config;
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.graph.max_batch", max_batch_);
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.graph.tokens", config.gemma.prompt_max_length);
+        engine::debug::trace_log_scalar("dramabox.gemma_prompt.graph.cuda", backend_type_ == core::BackendType::Cuda);
         ggml_init_params params{1536ull * 1024ull * 1024ull, nullptr, true};
         ctx_.reset(ggml_init(params));
         if (ctx_ == nullptr) {
@@ -619,7 +382,7 @@ private:
             ggml_new_tensor_1d(ctx_.get(), GGML_TYPE_I32, tokens),
             core::TensorShape::from_dims({tokens}),
             GGML_TYPE_I32);
-        const bool use_flash_attention = backend_type_ == core::BackendType::Cuda;
+        const bool use_flash_attention = true;
         attention_mask_ = use_flash_attention
             ? core::wrap_tensor(
                   ggml_new_tensor_4d(ctx_.get(), GGML_TYPE_F16, tokens, tokens, 1, max_batch_),
@@ -731,6 +494,11 @@ void DramaBoxGemma3PromptRuntime::prepare(int64_t batch) const {
 DramaBoxPromptEncoding DramaBoxGemma3PromptRuntime::encode(const DramaBoxGemmaTokenBatch & tokens) const {
     prepare(tokens.batch);
     return graph_->encode(tokens);
+}
+
+void DramaBoxGemma3PromptRuntime::release_runtime_state() const {
+    graph_.reset();
+    weights_.reset();
 }
 
 }  // namespace engine::models::dramabox

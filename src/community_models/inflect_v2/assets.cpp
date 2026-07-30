@@ -108,11 +108,11 @@ void add_conv(
 TensorInventory expected_tensors(const InflectV2Config & c) {
     TensorInventory out;
     out.emplace(
-        "model.enc_p.emb.weight",
+        "enc_p.emb.weight",
         std::vector<int64_t>{c.vocab_size, c.hidden_channels});
     for (int layer = 0; layer < c.encoder_layers; ++layer) {
         const std::string attention =
-            "model.enc_p.encoder.attn_layers." + std::to_string(layer);
+            "enc_p.encoder.attn_layers." + std::to_string(layer);
         out.emplace(
             attention + ".emb_rel_k",
             std::vector<int64_t>{
@@ -137,7 +137,7 @@ TensorInventory expected_tensors(const InflectV2Config & c) {
         }
         for (const char * group : {"norm_layers_1", "norm_layers_2"}) {
             const std::string norm =
-                "model.enc_p.encoder." + std::string(group) + "." +
+                "enc_p.encoder." + std::string(group) + "." +
                 std::to_string(layer);
             out.emplace(
                 norm + ".gamma",
@@ -147,7 +147,7 @@ TensorInventory expected_tensors(const InflectV2Config & c) {
                 std::vector<int64_t>{c.hidden_channels});
         }
         const std::string ffn =
-            "model.enc_p.encoder.ffn_layers." + std::to_string(layer);
+            "enc_p.encoder.ffn_layers." + std::to_string(layer);
         add_conv(
             out,
             ffn + ".conv_1",
@@ -161,40 +161,40 @@ TensorInventory expected_tensors(const InflectV2Config & c) {
     }
     add_conv(
         out,
-        "model.enc_p.proj",
+        "enc_p.proj",
         {2 * c.inter_channels, c.hidden_channels, 1},
         {2 * c.inter_channels});
     add_conv(
         out,
-        "model.dp.conv_1",
+        "dp.conv_1",
         {c.duration_channels, c.hidden_channels, 3},
         {c.duration_channels});
     out.emplace(
-        "model.dp.norm_1.gamma",
+        "dp.norm_1.gamma",
         std::vector<int64_t>{c.duration_channels});
     out.emplace(
-        "model.dp.norm_1.beta",
+        "dp.norm_1.beta",
         std::vector<int64_t>{c.duration_channels});
     add_conv(
         out,
-        "model.dp.conv_2",
+        "dp.conv_2",
         {c.duration_channels, c.duration_channels, 3},
         {c.duration_channels});
     out.emplace(
-        "model.dp.norm_2.gamma",
+        "dp.norm_2.gamma",
         std::vector<int64_t>{c.duration_channels});
     out.emplace(
-        "model.dp.norm_2.beta",
+        "dp.norm_2.beta",
         std::vector<int64_t>{c.duration_channels});
     add_conv(
         out,
-        "model.dp.proj",
+        "dp.proj",
         {1, c.duration_channels, 1},
         {1});
 
     add_conv(
         out,
-        "model.dec.conv_pre",
+        "dec.conv_pre",
         {c.upsample_initial_channels, c.inter_channels, 7},
         {c.upsample_initial_channels});
     int64_t channels = c.upsample_initial_channels;
@@ -202,7 +202,7 @@ TensorInventory expected_tensors(const InflectV2Config & c) {
         const int64_t output_channels = channels / 2;
         add_conv(
             out,
-            "model.dec.ups." + std::to_string(stage),
+            "dec.ups." + std::to_string(stage),
             {channels, output_channels, c.upsample_kernel_sizes[stage]},
             {output_channels});
         for (size_t block = 0;
@@ -214,7 +214,7 @@ TensorInventory expected_tensors(const InflectV2Config & c) {
                 for (size_t layer = 0; layer < 3; ++layer) {
                     add_conv(
                         out,
-                        "model.dec.resblocks." +
+                        "dec.resblocks." +
                             std::to_string(block_index) + "." + stack + "." +
                             std::to_string(layer),
                         {
@@ -229,13 +229,13 @@ TensorInventory expected_tensors(const InflectV2Config & c) {
         channels = output_channels;
     }
     out.emplace(
-        "model.dec.conv_post.weight",
+        "dec.conv_post.weight",
         std::vector<int64_t>{1, channels, 7});
 
     const int64_t half = c.inter_channels / 2;
     for (int flow = 0; flow < c.flow_count; ++flow) {
         const std::string prefix =
-            "model.flow.flows." + std::to_string(flow * 2);
+            "flow.flows." + std::to_string(flow * 2);
         add_conv(
             out,
             prefix + ".pre",

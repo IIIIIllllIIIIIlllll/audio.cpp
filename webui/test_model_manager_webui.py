@@ -1,190 +1,118 @@
-"""The WebUI downloader must install files where required_files says they are.
+"""The WebUI-local model manager installs packages directly from model_specs/.
 
-model_manager_webui.py overrides the upstream download path with a resumable,
-Torch-free one. list_hf_files() yields (repo path, installed path, size) and those
-two differ for every package with a strip_prefix -- which is all the GGUF packages
-in audio-cpp/audio.cpp-gguf, since they live in a repo subdirectory
-(Vevo2-GGUF/vevo2-q8_0.gguf) that must not appear in the installed model directory.
-Using the repo path as the destination installed them one level too deep, and the
-install failed validation with "missing required files" (issue #113).
-
-hf_hub_download is stubbed here: the point is where bytes land, not the transfer.
+The WebUI should be relatively self-contained for downloads: no legacy
+tools/model_manager.py catalog, no conversion path, and no safetensors package
+bridge. model_manager_webui.py is the small spec-v1 downloader copied next to the
+WebUI, so these tests cover the package selection and final on-disk layout.
 """
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(HERE)
-for path in (HERE, os.path.join(REPO_ROOT, "tools")):
-    if path not in sys.path:
-        sys.path.insert(0, path)
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
-import model_manager as mm  # noqa: E402
 import model_manager_webui as mmw  # noqa: E402
 
 
-class _Source:
-    repo_id = "audio-cpp/audio.cpp-gguf"
-    revision = "main"
+def _package(**overrides):
+    values = {
+        "family": "demo",
+        "id": "demo_q8_0",
+        "display_name": "Demo Q8_0",
+        "target_directory": "Demo-GGUF",
+        "format": "gguf",
+        "precision": "q8_0",
+        "files": ("Demo-GGUF/model-q8_0.gguf",),
+        "strip_prefix": "Demo-GGUF/",
+        "download": {"kind": "huggingface_snapshot", "repo": "audio-cpp/audio.cpp-gguf"},
+        "default": True,
+    }
+    values.update(overrides)
+    return mmw.PackageRecord(**values)
 
 
-class _RecordingHub:
-    """Stands in for hf_hub_download: writes `filename` under local_dir, as the real
-    client does, and records what it was asked for."""
+class SpecPackageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.records = mmw.flatten_packages(mmw.load_specs(mmw.DEFAULT_SPECS_DIR))
+        cls.by_id = {record.id: record for record in cls.records}
 
-    def __init__(self, payload=b"gguf"):
-        self.payload = payload
-        self.requested = []
+    def test_webui_manager_reads_default_spec_packages(self):
+        voxcpm2 = self.by_id["voxcpm2_q8_0"]
+        self.assertEqual(voxcpm2.family, "voxcpm2")
+        self.assertEqual(voxcpm2.format, "gguf")
+        self.assertEqual(voxcpm2.target_directory, "VoxCPM2-GGUF")
+        self.assertEqual(voxcpm2.download["repo"], "audio-cpp/audio.cpp-gguf")
 
-    def __call__(self, repo_id, filename, revision, local_dir, token):
-        self.requested.append(filename)
-        written = Path(local_dir) / filename
-        written.parent.mkdir(parents=True, exist_ok=True)
-        written.write_bytes(self.payload)
-        return str(written)
+        inflect = self.by_id["inflect_micro_v2_orig"]
+        self.assertEqual(inflect.family, "inflect_v2")
+        self.assertEqual(inflect.format, "gguf")
+        self.assertEqual(inflect.target_directory, "Inflect-Micro-v2-GGUF")
+
+    def test_selecting_a_family_uses_its_default_package(self):
+        selected = mmw.select_package(self.records, SimpleNamespace(
+            package="voxcpm2", format=None, precision=None))
+        self.assertEqual(selected.id, "voxcpm2_q8_0")
+
+    def test_non_huggingface_package_is_rejected(self):
+        package = _package(download={"kind": "local"})
+        with self.assertRaises(mmw.ManagerError):
+            mmw.ensure_hf_package(package)
 
 
-class StripPrefixPlacementTests(unittest.TestCase):
+class InstallPlacementTests(unittest.TestCase):
     def setUp(self):
-        self.hub = _RecordingHub()
-        original = mmw.hf_hub_download
-        mmw.hf_hub_download = self.hub
-        self.addCleanup(setattr, mmw, "hf_hub_download", original)
+        self.root = tempfile.mkdtemp(prefix="audiocpp_webui_manager_test_")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.calls = []
+        original = mmw.download_file
+        self.addCleanup(setattr, mmw, "download_file", original)
 
-    def _install(self, tmp, files):
-        original = mm.list_hf_files
-        mm.list_hf_files = lambda source: files
-        self.addCleanup(setattr, mm, "list_hf_files", original)
-        required = [local for _remote, local, _size in files]
-        mmw.install_snapshot_into_dir(_Source(), Path(tmp), required)
+        def fake_download(package, remote_path, output_path):
+            self.calls.append((remote_path, output_path.name))
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"gguf")
+
+        mmw.download_file = fake_download
+
+    def _install(self, package, overwrite=False):
+        args = SimpleNamespace(
+            models_root=self.root,
+            overwrite=overwrite,
+            check=False,
+            dry_run=False,
+        )
+        mmw.install_package(package, args)
 
     def test_strip_prefix_file_lands_at_its_installed_path(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            self._install(tmp, [("Vevo2-GGUF/vevo2-q8_0.gguf", "vevo2-q8_0.gguf", 4)])
-            self.assertTrue(os.path.isfile(os.path.join(tmp, "vevo2-q8_0.gguf")))
-            # The repo subdirectory must not survive into the installed package.
-            self.assertFalse(os.path.exists(os.path.join(tmp, "Vevo2-GGUF")))
-            self.assertEqual(self.hub.requested, ["Vevo2-GGUF/vevo2-q8_0.gguf"],
-                             "the repo path is what must be requested from the hub")
+        self._install(_package())
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "Demo-GGUF", "model-q8_0.gguf")))
+        self.assertEqual(self.calls, [
+            ("Demo-GGUF/model-q8_0.gguf", "model-q8_0.gguf"),
+        ])
 
     def test_nested_paths_below_the_stripped_prefix_are_preserved(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            self._install(tmp, [("Pkg-GGUF/speech_tokenizer/config.json",
-                                 "speech_tokenizer/config.json", 4)])
-            self.assertTrue(os.path.isfile(os.path.join(tmp, "speech_tokenizer", "config.json")))
-            self.assertFalse(os.path.exists(os.path.join(tmp, "Pkg-GGUF")))
+        package = _package(files=("Demo-GGUF/tokenizer/config.json",))
+        self._install(package)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "Demo-GGUF", "tokenizer", "config.json")))
 
     def test_packages_without_a_strip_prefix_are_unchanged(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            self._install(tmp, [("config.json", "config.json", 4),
-                                ("speech_tokenizer/model.safetensors",
-                                 "speech_tokenizer/model.safetensors", 4)])
-            self.assertTrue(os.path.isfile(os.path.join(tmp, "config.json")))
-            self.assertTrue(os.path.isfile(os.path.join(tmp, "speech_tokenizer", "model.safetensors")))
+        package = _package(files=("config.json",), strip_prefix="")
+        self._install(package)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "Demo-GGUF", "config.json")))
 
-    def test_a_complete_file_is_not_downloaded_again(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            Path(tmp, "vevo2-q8_0.gguf").write_bytes(b"gguf")
-            self._install(tmp, [("Vevo2-GGUF/vevo2-q8_0.gguf", "vevo2-q8_0.gguf", 4)])
-            self.assertEqual(self.hub.requested, [],
-                             "an already-complete file at its installed path was re-downloaded")
-
-
-class EveryStripPrefixPackageIsCoveredTests(unittest.TestCase):
-    def test_gguf_repo_packages_declare_stripped_required_files(self):
-        # Guards the invariant the placement fix restores: required_files is written
-        # against the stripped path, so a downloader that keeps the repo prefix fails.
-        catalog = mm.CATALOG
-        packages = catalog.values() if isinstance(catalog, dict) else catalog
-        checked = 0
-        for package in packages:
-            source = package.source
-            if not isinstance(source, mm.SnapshotSource) or not source.strip_prefix:
-                continue
-            checked += 1
-            for required in package.required_files:
-                self.assertFalse(required.startswith(source.strip_prefix),
-                                 f"{package.id} required_files still carries the strip_prefix")
-        self.assertGreater(checked, 0, "no strip_prefix packages found to check")
-
-
-class SpecPackageBridgeTests(unittest.TestCase):
-    def test_voxcpm2_spec_package_is_available_to_webui_manager(self):
-        package = mm.PACKAGE_BY_ID["voxcpm2_q8_0"]
-        self.assertEqual(package.target_directory, "VoxCPM2-GGUF")
-        self.assertEqual(package.required_files, ("voxcpm2-q8_0.gguf",))
-        self.assertEqual(package.source.repo_id, "audio-cpp/audio.cpp-gguf")
-        self.assertEqual(package.source.include_prefixes,
-                         ("VoxCPM2-GGUF/voxcpm2-q8_0.gguf",))
-        self.assertEqual(package.source.strip_prefix, "VoxCPM2-GGUF/")
-
-    def test_converter_specs_stay_on_legacy_manager_path(self):
-        package = mm.PACKAGE_BY_ID["inflect_micro_v2"]
-        self.assertEqual(package.required_files, ("config.json", "model.safetensors"))
-        self.assertEqual(package.source.repo_id, "owensong/Inflect-Micro-v2-ONNX")
-
-
-class SnapshotDependencyRoutingTests(unittest.TestCase):
-    def test_voxcpm2_safetensors_postprocess_loads_install_deps(self):
-        calls = []
-        original_download = mmw._ensure_download_deps
-        original_install = mmw._ensure_install_deps
-        original_install_snapshot = mmw.install_snapshot
-        mmw._ensure_download_deps = lambda: calls.append("download")
-        mmw._ensure_install_deps = lambda: calls.append("install")
-        mmw.install_snapshot = lambda package, source, root, overwrite: root / package.target_directory
-        self.addCleanup(setattr, mmw, "_ensure_download_deps", original_download)
-        self.addCleanup(setattr, mmw, "_ensure_install_deps", original_install)
-        self.addCleanup(setattr, mmw, "install_snapshot", original_install_snapshot)
-
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            code = mmw.command_install(SimpleNamespace(
-                package_id="voxcpm2",
-                models_root=tmp,
-                overwrite=True,
-                source_file=None,
-                output_file=None,
-                source_dir=None,
-                variant=None,
-            ))
-
-        self.assertEqual(code, 0)
-        self.assertEqual(calls, ["install"])
-
-    def test_spec_gguf_snapshot_stays_download_only(self):
-        calls = []
-        original_download = mmw._ensure_download_deps
-        original_install = mmw._ensure_install_deps
-        original_install_snapshot = mmw.install_snapshot
-        mmw._ensure_download_deps = lambda: calls.append("download")
-        mmw._ensure_install_deps = lambda: calls.append("install")
-        mmw.install_snapshot = lambda package, source, root, overwrite: root / package.target_directory
-        self.addCleanup(setattr, mmw, "_ensure_download_deps", original_download)
-        self.addCleanup(setattr, mmw, "_ensure_install_deps", original_install)
-        self.addCleanup(setattr, mmw, "install_snapshot", original_install_snapshot)
-
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmp:
-            code = mmw.command_install(SimpleNamespace(
-                package_id="voxcpm2_q8_0",
-                models_root=tmp,
-                overwrite=True,
-                source_file=None,
-                output_file=None,
-                source_dir=None,
-                variant=None,
-            ))
-
-        self.assertEqual(code, 0)
-        self.assertEqual(calls, ["download"])
+    def test_existing_target_requires_overwrite(self):
+        os.makedirs(os.path.join(self.root, "Demo-GGUF"))
+        with self.assertRaises(mmw.ManagerError):
+            self._install(_package(), overwrite=False)
+        self._install(_package(), overwrite=True)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "Demo-GGUF", "model-q8_0.gguf")))
 
 
 if __name__ == "__main__":

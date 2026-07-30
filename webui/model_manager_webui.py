@@ -1,509 +1,339 @@
 #!/usr/bin/env python3
-"""WebUI front-end for ``tools/model_manager.py`` — same CLI, sturdier downloads.
-
-The Gradio WebUI kicks off model installs as a background subprocess
-(``model_manager_webui.py install <package_id>``), where two things matter that
-the upstream tool intentionally does not do:
-
-* **Resumable, no-Torch downloads.** Weights land in a ``<file>.part`` sidecar and
-  resume across runs via HTTP ``Range`` (or the hub client's own resume for
-  Xet-backed repos), so a dropped multi-GB transfer picks up instead of
-  restarting. A plain snapshot download must not import Torch either — its native
-  DLLs can fail to load in some environments (e.g. conda Python on Windows) and
-  would needlessly block downloads for models whose inference runs in the C++
-  server.
-* **Windows-tolerant finalization.** Defender/indexers and the WebUI's own
-  progress scan can briefly hold a directory handle right after the last shard is
-  written, so promoting a staged directory retries past transient sharing
-  violations.
-
-Rather than fork the 2700-line upstream tool, this module imports it and
-overrides only the download path, then delegates to its unchanged CLI. Everything
-not redefined here — the catalog, argument parsing, ``list``/``info``, converter
-installs, all the ``convert_*`` post-processing — comes straight from
-``model_manager`` (referenced as ``mm.*`` below, so what is overridden vs.
-inherited stays obvious).
-"""
 from __future__ import annotations
 
+import argparse
+import json
 import os
-import re
 import shutil
 import sys
-import time
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TOOLS_DIR = REPO_ROOT / "tools"
-if str(TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(TOOLS_DIR))
-
-import model_manager as mm
-import model_manager_v2 as mmv2
-
-# huggingface_hub is imported lazily (see _ensure_download_deps) so that
-# ``list``/``info`` keep working without it, exactly as upstream keeps Torch lazy.
-hf_hub_download = None
+DEFAULT_SPECS_DIR = REPO_ROOT / "model_specs"
 
 
-SPEC_PACKAGE_BY_ID = {
-    record.id: record
-    for record in mmv2.flatten_packages(mmv2.load_specs(mmv2.DEFAULT_SPECS_DIR))
-}
+class ManagerError(RuntimeError):
+    pass
 
 
-# --- dependency loading ------------------------------------------------------
-
-def _ensure_download_deps() -> None:
-    """Import only what a plain snapshot/file download needs: huggingface_hub + yaml.
-
-    Downloading weights must not drag in Torch (see the module docstring). yaml is
-    published into the upstream module's namespace because its config/convert
-    helpers read ``mm.yaml``."""
-    global hf_hub_download
-    if hf_hub_download is not None:
-        return
-    from huggingface_hub import hf_hub_download as _hf_hub_download
-    import yaml as _yaml
-
-    hf_hub_download = _hf_hub_download
-    mm.yaml = _yaml
+@dataclass(frozen=True)
+class PackageRecord:
+    family: str
+    id: str
+    display_name: str
+    target_directory: str
+    format: str
+    precision: str
+    files: tuple[str, ...]
+    strip_prefix: str
+    download: dict[str, Any]
+    default: bool
 
 
-def _ensure_install_deps() -> None:
-    """Everything _ensure_download_deps loads, plus Torch/safetensors for conversions.
-
-    Only the composite/converter paths need this; plain snapshot downloads call
-    _ensure_download_deps() so they stay Torch-free. Torch et al. are populated on
-    the upstream module (mm.torch, mm.safe_open, ...) because its convert_* helpers
-    read them from there."""
-    _ensure_download_deps()
-    mm._ensure_install_deps()
-
-
-# --- plain-URL downloads (resumable) -----------------------------------------
-
-def download_file(
-    url: str,
-    target: Path,
-    expected_size: int | None,
-    label: str | None = None,
-) -> int:
-    """Download ``url`` into ``target``, resuming across runs when possible.
-
-    Bytes land in a sidecar ``<target>.part`` file first. If a previous run was
-    interrupted, an HTTP ``Range`` request fetches only the missing tail instead
-    of restarting the transfer (critical for multi-GB weights on flaky links);
-    the ``.part`` file is promoted to ``target`` only once the full length has
-    arrived. Files already present at the expected size are skipped outright.
-    """
-    name = label or target.name
-    if expected_size is not None and target.is_file() and target.stat().st_size == expected_size:
-        print(f"skip {name} (already complete)")
-        return expected_size
-
-    part = target.with_name(target.name + ".part")
-    existing = part.stat().st_size if part.is_file() else 0
-    if expected_size is not None and existing >= expected_size:
-        # A finished-but-unpromoted leftover promotes as-is; anything larger than
-        # expected is corrupt, so discard it and start over.
-        if existing == expected_size:
-            part.replace(target)
-            print(f"skip {name} (already complete)")
-            return expected_size
-        part.unlink()
-        existing = 0
-
-    headers = mm.http_headers()
-    mode = "wb"
-    if existing > 0:
-        headers["Range"] = f"bytes={existing}-"
-        mode = "ab"
-        print(f"resume {name} (from {existing} bytes)")
-    else:
-        print(f"download {name}")
-
-    request = Request(url, headers=headers)
-    try:
-        response = urlopen(request)
-    except HTTPError as ex:
-        if ex.code == 416 and existing > 0:
-            # Requested range past EOF: the server has nothing more to send.
-            if expected_size is None or existing == expected_size:
-                part.replace(target)
-                return existing
-            part.unlink(missing_ok=True)
-        raise
-
-    with response:
-        status = getattr(response, "status", None) or response.getcode()
-        if existing > 0 and status != 206:
-            # Server ignored the Range header (answered 200) — start over.
-            print(f"restart {name} (server ignored resume)")
-            existing = 0
-            mode = "wb"
-        written = existing
-        with part.open(mode) as handle:
-            while True:
-                chunk = response.read(1 << 20)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                written += len(chunk)
-
-    if expected_size is not None and written != expected_size:
-        raise RuntimeError(f"downloaded size mismatch for {target}: {written} != {expected_size}")
-    part.replace(target)
-    return written
+def huggingface_token() -> str | None:
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token:
+        return token.strip()
+    token_path = Path.home() / ".cache" / "huggingface" / "token"
+    if token_path.is_file():
+        cached = token_path.read_text(encoding="utf-8").strip()
+        if cached:
+            return cached
+    return None
 
 
-# --- huggingface_hub downloads (Xet-backed repos) ----------------------------
-
-def download_hf_file(
-    source,
-    remote_path: str,
-    local_path: str,
-    destination_root: Path,
-    expected_size: int | None,
-) -> None:
-    """Fetch repo file ``remote_path`` and place it at ``destination_root/local_path``.
-
-    Plain HTTP against the resolve URL cannot be used here: Xet-backed repos redirect
-    to a CDN that rejects ordinary GETs, so only the hub client (with ``hf_xet``) can
-    pull their weights. ``local_dir`` writes the file straight to its final location
-    instead of duplicating it in the shared blob cache, and the hub client does its
-    own resume, so an interrupted run picks up where it left off just like
-    ``download_file`` does for the plain-URL callers.
-
-    The two paths differ whenever the package sets ``strip_prefix`` — the GGUF packages
-    in audio-cpp/audio.cpp-gguf all live under a repo subdirectory
-    (``Vevo2-GGUF/vevo2-q8_0.gguf``) that must not appear in the installed model
-    directory. hf_hub_download can only write ``local_dir/<filename>``, so the file is
-    moved into place afterwards and the emptied repo subdirectory is pruned; leaving it
-    behind would promote a stray ``Vevo2-GGUF/`` into the installed package.
-    """
-    destination = destination_root / local_path
-    if expected_size is not None and destination.is_file() and destination.stat().st_size == expected_size:
-        print(f"skip {local_path} (already complete)")
-        return
-    print(f"download {remote_path}")
-    downloaded = Path(hf_hub_download(
-        repo_id=source.repo_id,
-        filename=remote_path,
-        revision=source.revision,
-        local_dir=destination_root,
-        token=mm.huggingface_token(),
-    ))
-    if downloaded.resolve() == destination.resolve():
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    downloaded.replace(destination)
-    prune_empty_parents(downloaded.parent, destination_root)
+def http_headers() -> dict[str, str]:
+    headers = {"User-Agent": "audio.cpp model_manager_v2.py"}
+    token = huggingface_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
-def prune_empty_parents(directory: Path, stop_at: Path) -> None:
-    """Remove ``directory`` and its now-empty parents, never touching ``stop_at``."""
-    current = directory
-    while current != stop_at and stop_at in current.parents:
-        try:
-            current.rmdir()
-        except OSError:
-            return
-        current = current.parent
+def quote_repo_path(value: str) -> str:
+    return "/".join(quote(part, safe="") for part in value.split("/"))
 
 
-def prune_hf_local_dir_cache(destination_root: Path) -> None:
-    """Drop the ``.cache/huggingface`` bookkeeping tree hf_hub_download leaves behind.
-
-    With ``local_dir=`` the hub client stores per-file resume metadata under
-    ``<local_dir>/.cache/huggingface``. It is invisible to validation (which only
-    checks that required files exist), but without this it would be promoted into
-    the installed model directory as stray junk. Only safe to call once every file
-    for this destination has arrived, since removing it discards resume state.
-    """
-    cache_dir = destination_root / ".cache" / "huggingface"
-    if cache_dir.is_dir():
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    parent = destination_root / ".cache"
-    if parent.is_dir() and not any(parent.iterdir()):
-        parent.rmdir()
+def validate_relative_path(value: str, label: str) -> Path:
+    path = Path(value)
+    if path.is_absolute() or any(part == ".." for part in path.parts):
+        raise ManagerError(f"{label} must be a safe relative path: {value}")
+    if not value or value == ".":
+        raise ManagerError(f"{label} must not be empty")
+    return path
 
 
-def install_snapshot_into_dir(
-    source,
-    destination_root: Path,
-    required_files: Iterable[str],
-    *,
-    validate: bool = True,
-) -> None:
-    files = mm.list_hf_files(source)
-    # list_hf_files yields (repo path, installed path, size); the two differ for packages
-    # with a strip_prefix, and the installed path is what required_files is written against.
-    for remote_path, local_path, expected_size in files:
-        (destination_root / local_path).parent.mkdir(parents=True, exist_ok=True)
-        download_hf_file(source, remote_path, local_path, destination_root, expected_size)
-    prune_hf_local_dir_cache(destination_root)
-    if validate:
-        mm.validate_required_files_list(required_files, destination_root, source.repo_id)
+def stripped_path(remote_path: str, strip_prefix: str) -> Path:
+    result = remote_path
+    if strip_prefix:
+        prefix = strip_prefix.rstrip("/")
+        if result == prefix:
+            raise ManagerError(f"strip_prefix removes the whole file path: {remote_path}")
+        if not result.startswith(prefix + "/"):
+            raise ManagerError(f"file path does not start with strip_prefix '{strip_prefix}': {remote_path}")
+        result = result[len(prefix) + 1 :]
+    return validate_relative_path(result, "local file path")
 
 
-# --- resumable staging + Windows-tolerant finalization -----------------------
-
-def staging_dir_name(package) -> str:
-    """Deterministic staging directory name so an interrupted install resumes
-    into the same place on the next run (a random ``mkdtemp`` name would strand
-    the partial downloads)."""
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", package.target_directory)
-    return f"{safe}.partial"
-
-
-def spec_package_required_files(package: mmv2.PackageRecord) -> tuple[str, ...]:
-    prefix = (package.strip_prefix or "").strip("/")
-    if prefix == ".":
-        prefix = ""
-    files = []
-    for remote in package.files:
-        if prefix:
-            marker = prefix + "/"
-            if not remote.startswith(marker):
-                raise RuntimeError(f"file path does not start with strip_prefix '{package.strip_prefix}': {remote}")
-            local = remote[len(marker):]
-        else:
-            local = remote
-        parts = [part for part in local.replace("\\", "/").split("/") if part]
-        if not parts or any(part == ".." for part in parts):
-            raise RuntimeError(f"unsafe package file path: {remote}")
-        files.append("/".join(parts))
-    return tuple(files)
+def load_specs(specs_dir: Path) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for path in sorted(specs_dir.glob("*.json")):
+        with path.open("r", encoding="utf-8") as handle:
+            spec = json.load(handle)
+        spec["_spec_path"] = str(path)
+        specs.append(spec)
+    return specs
 
 
-def spec_package_source(package: mmv2.PackageRecord):
-    mmv2.ensure_hf_package(package)
-    strip_prefix = package.strip_prefix
-    if strip_prefix and strip_prefix != "." and not strip_prefix.endswith("/"):
-        strip_prefix += "/"
-    if strip_prefix == ".":
-        strip_prefix = ""
-    return mm.SnapshotSource(
-        repo_id=package.download["repo"],
-        revision=package.download.get("revision", "main"),
-        include_prefixes=package.files,
-        strip_prefix=strip_prefix,
-    )
+def merged_download(spec: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+    defaults = spec.get("package_defaults", {}).get("download", {})
+    download = dict(defaults)
+    download.update(package.get("download", {}))
+    return download
 
 
-def spec_package_as_legacy(package: mmv2.PackageRecord):
-    return mm.ModelPackage(
-        id=package.id,
-        display_name=package.display_name,
-        target_directory=package.target_directory,
-        source=spec_package_source(package),
-        required_files=spec_package_required_files(package),
-        family=package.family,
-        standalone=True,
-    )
-
-
-for _spec_package in SPEC_PACKAGE_BY_ID.values():
-    if _spec_package.id not in mm.PACKAGE_BY_ID:
-        if _spec_package.download.get("kind") != "huggingface_snapshot":
-            continue
-        _legacy_package = spec_package_as_legacy(_spec_package)
-        mm.PACKAGE_BY_ID[_legacy_package.id] = _legacy_package
-        mm.CATALOG = (*mm.CATALOG, _legacy_package)
-
-
-def prune_staging_root(staging_root: Path) -> None:
-    try:
-        if staging_root.exists() and not any(staging_root.iterdir()):
-            staging_root.rmdir()
-    except OSError:
-        pass
-
-
-def promote_staging_directory(source: Path, destination: Path) -> None:
-    """Rename a completed staging directory, tolerating transient Windows locks.
-
-    Defender/indexers and the WebUI progress scan can briefly retain a directory
-    enumeration handle just after the final shard is written. Windows then reports
-    access denied/sharing violation even though the ACL and destination are valid.
-    """
-    retry_delays = (0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0)
-    for attempt, delay in enumerate(retry_delays, start=1):
-        try:
-            source.rename(destination)
-            return
-        except OSError as error:
-            if os.name != "nt" or getattr(error, "winerror", None) not in {5, 32}:
-                raise
-            print(
-                f"retry model directory finalization ({attempt}/{len(retry_delays)}): "
-                f"{source} -> {destination} ({error})"
+def flatten_packages(specs: list[dict[str, Any]]) -> list[PackageRecord]:
+    records: list[PackageRecord] = []
+    for spec in specs:
+        family = spec["family"]
+        for package in spec.get("packages", []):
+            records.append(
+                PackageRecord(
+                    family=family,
+                    id=package["id"],
+                    display_name=package["display_name"],
+                    target_directory=package["target_directory"],
+                    format=package["format"],
+                    precision=package["precision"],
+                    files=tuple(package["files"]),
+                    strip_prefix=package.get("strip_prefix", ""),
+                    download=merged_download(spec, package),
+                    default=bool(package.get("default", False)),
+                )
             )
-            time.sleep(delay)
-    source.rename(destination)
+    return records
 
 
-def install_snapshot(package, source, models_root: Path, overwrite: bool) -> Path:
-    target_dir = models_root / package.target_directory
-    staging_root = models_root / ".engine_model_staging"
-    staging_root.mkdir(parents=True, exist_ok=True)
-    staging_dir = staging_root / staging_dir_name(package)
-    staging_dir.mkdir(parents=True, exist_ok=True)
+def select_package(records: list[PackageRecord], args: argparse.Namespace) -> PackageRecord:
+    exact = [record for record in records if record.id == args.package]
+    if exact:
+        if args.format or args.precision:
+            raise ManagerError("format/precision filters are only used when selecting by family")
+        return exact[0]
+
+    family = [record for record in records if record.family == args.package]
+    if not family:
+        raise ManagerError(f"unknown package or family: {args.package}")
+    candidates = family
+    if args.format:
+        candidates = [record for record in candidates if record.format == args.format]
+    if args.precision:
+        candidates = [record for record in candidates if record.precision == args.precision]
+    if not candidates:
+        raise ManagerError(f"no package for family '{args.package}' matches the requested filters")
+    default_candidates = [record for record in candidates if record.default]
+    if len(default_candidates) == 1:
+        return default_candidates[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    ids = ", ".join(record.id for record in candidates)
+    raise ManagerError(f"ambiguous family '{args.package}', choose one package id: {ids}")
+
+
+def hf_url(repo: str, revision: str, remote_path: str) -> str:
+    return f"https://huggingface.co/{repo}/resolve/{quote(revision, safe='')}/{quote_repo_path(remote_path)}"
+
+
+def check_remote_file(package: PackageRecord, remote_path: str) -> int | None:
+    repo = package.download["repo"]
+    revision = package.download.get("revision", "main")
+    request = Request(hf_url(repo, revision, remote_path), headers=http_headers(), method="HEAD")
     try:
-        pre_validate_files = tuple(relative for relative in package.required_files if relative != "audiovae.safetensors")
-        install_snapshot_into_dir(source, staging_dir, pre_validate_files, validate=package.id != "voxcpm2")
-        if package.id == "voxcpm2":
-            mm.convert_voxcpm2_audiovae(staging_dir)
-            mm.validate_required_files(package, staging_dir)
-        elif package.id == "moss_tts_nano_100m_model":
-            mm.convert_moss_tts_weights(staging_dir)
-        if target_dir.exists():
-            if not overwrite:
-                raise RuntimeError(f"model directory already exists: {target_dir}")
-            shutil.rmtree(target_dir)
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        promote_staging_directory(staging_dir, target_dir)
-        return target_dir
-    finally:
-        # On success the staging dir was renamed away; on failure it is kept so
-        # the next run resumes partial downloads. Drop the parent when empty.
-        prune_staging_root(staging_root)
+        with urlopen(request, timeout=60) as response:
+            size = response.headers.get("Content-Length")
+            return int(size) if size else None
+    except HTTPError as error:
+        if package.download.get("gated") is True and error.code in (401, 403):
+            return None
+        raise ManagerError(f"remote file is not accessible: {repo}/{remote_path} ({error.code})") from error
 
 
-def install_composite_snapshot(package, source, models_root: Path, overwrite: bool) -> Path:
-    package_root = models_root / package.target_directory
-    staging_root = models_root / ".engine_model_staging"
-    staging_root.mkdir(parents=True, exist_ok=True)
-    staging_bundle = staging_root / staging_dir_name(package)
-    staging_bundle.mkdir(parents=True, exist_ok=True)
-    staged_roots: dict[Path, Path] = {}
+def download_file(package: PackageRecord, remote_path: str, output_path: Path) -> None:
+    repo = package.download["repo"]
+    revision = package.download.get("revision", "main")
+    request = Request(hf_url(repo, revision, remote_path), headers=http_headers())
     try:
-        staged_package_root = staging_bundle / package.target_directory
-        for placement in source.placements:
-            destination_root = mm.normalized_join(staged_package_root, placement.target_subdir)
-            final_root = mm.normalized_join(package_root, placement.target_subdir)
-            if final_root.exists() and not overwrite:
-                mm.validate_required_files_list(placement.required_files, final_root, str(final_root))
-                continue
-            destination_root.mkdir(parents=True, exist_ok=True)
-            install_snapshot_into_dir(placement.source, destination_root, placement.required_files)
-            staged_roots[final_root] = destination_root
-
-        if package.id == "vevo2":
-            whisper_root = staging_bundle / "whisper-medium"
-            mm.install_whisper_medium_dependency(whisper_root)
-            staged_roots[package_root.parent / "whisper-medium"] = whisper_root
-            mm.prepare_vevo2_snapshot_layout(staged_package_root)
-        elif package.id == "ace_step":
-            mm.convert_ace_step_silence_latent(staged_package_root / "acestep-v15-turbo")
-            mm.convert_ace_step_silence_latent(staged_package_root / "acestep-v15-base")
-        elif package.id == "moss_tts_nano_100m":
-            mm.convert_moss_tts_weights(staged_package_root)
-        elif package.id in {"irodori_tts_500m_v3", "irodori_tts_600m_v3_voice_design"}:
-            mm.write_irodori_model_config(staged_package_root)
-            dacvae_root = staged_package_root.parent / "Semantic-DACVAE-Japanese-32dim"
-            if dacvae_root.exists():
-                mm.convert_irodori_dacvae_weights(dacvae_root)
-        elif package.id == "outetts_1_0_1b":
-            dac_root = staged_package_root.parent / "DAC.speech.v1.0"
-            if dac_root.exists():
-                mm.convert_outetts_dac_weights(dac_root)
-        elif package.id == "vibevoice_asr":
-            mm.copy_bundled_model_manager_assets(
-                "vibevoice_1_5b",
-                staged_package_root,
-                ("tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"),
-            )
-        elif package.id in {"vibevoice_1_5b", "vibevoice_7b"}:
-            # VibeVoice 1.5B and 7B share the same Qwen2.5 tokenizer, and neither
-            # upstream repo ships the tokenizer files, so both reuse one bundle.
-            mm.copy_bundled_model_manager_assets(
-                "vibevoice_1_5b",
-                staged_package_root,
-                ("tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"),
-            )
-        mm.validate_composite_required_files(package, staged_package_root, package_root)
-
-        top_level_roots: list[Path] = []
-        for final_root in sorted(staged_roots.keys(), key=lambda path: len(path.parts)):
-            if any(final_root.is_relative_to(existing) for existing in top_level_roots):
-                continue
-            top_level_roots.append(final_root)
-
-        for final_root in sorted(top_level_roots, key=lambda path: len(path.parts), reverse=True):
-            if final_root.exists():
-                if not overwrite:
-                    raise RuntimeError(f"model directory already exists: {final_root}")
-                shutil.rmtree(final_root)
-
-        for final_root in sorted(top_level_roots, key=lambda path: len(path.parts)):
-            destination_root = staged_roots[final_root]
-            final_root.parent.mkdir(parents=True, exist_ok=True)
-            promote_staging_directory(destination_root, final_root)
-        shutil.rmtree(staging_bundle, ignore_errors=True)
-        return package_root
-    finally:
-        # Failed runs keep their staging bundle so partial downloads resume;
-        # successful runs already removed it above. Drop the parent when empty.
-        try:
-            if staging_root.exists() and not any(staging_root.iterdir()):
-                staging_root.rmdir()
-        except OSError:
-            pass
+        with urlopen(request, timeout=300) as response:
+            expected = response.headers.get("Content-Length")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            total = 0
+            with output_path.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    total += len(chunk)
+            if expected is not None and total != int(expected):
+                raise ManagerError(f"downloaded size mismatch for {output_path}: {total} != {expected}")
+    except HTTPError as error:
+        if package.download.get("gated") is True and error.code in (401, 403):
+            raise ManagerError(
+                f"{repo}/{remote_path} requires accepted Hugging Face access and a valid HF token"
+            ) from error
+        raise ManagerError(f"failed to download {repo}/{remote_path}: HTTP {error.code}") from error
 
 
-# --- install command (chooses download-only vs. full deps) -------------------
-
-def command_install(args) -> int:
-    package = mm.PACKAGE_BY_ID.get(args.package_id)
-    if package is None:
-        raise RuntimeError(f"unknown package id: {args.package_id}")
-    models_root = mm.resolve_path(args.models_root)
-    models_root.mkdir(parents=True, exist_ok=True)
-    source = package.source
-    if isinstance(source, mm.UnsupportedSource):
-        raise RuntimeError(f"{package.id} is not installable: {source.reason}")
-    if isinstance(source, mm.SnapshotSource):
-        if package.id in mm.POSTPROCESS_SNAPSHOT_PACKAGE_IDS or package.id == "moss_tts_nano_100m_model":
-            _ensure_install_deps()
-        else:
-            # Plain download: huggingface_hub only, no Torch DLLs.
-            _ensure_download_deps()
-        install_path = install_snapshot(package, source, models_root, args.overwrite)
-    elif isinstance(source, mm.CompositeSnapshotSource):
-        # Composite snapshots may run a Torch post-process step, so bring in full deps.
-        _ensure_install_deps()
-        install_path = install_composite_snapshot(package, source, models_root, args.overwrite)
-    else:
-        _ensure_install_deps()
-        install_path = mm.install_converter(
-            package,
-            source,
-            models_root,
-            args.overwrite,
-            args.source_file,
-            args.output_file,
-            args.source_dir,
-            args.variant,
+def ensure_hf_package(package: PackageRecord) -> None:
+    kind = package.download.get("kind")
+    if kind != "huggingface_snapshot":
+        raise ManagerError(
+            f"{package.id} uses download kind '{kind}'. model_manager_v2 only installs huggingface_snapshot packages; "
+            "legacy composite and converter installs are not supported by this WebUI manager."
         )
-    print(f"installed {package.id} -> {install_path}")
-    return 0
+    if not package.download.get("repo"):
+        raise ManagerError(f"{package.id} has no Hugging Face repo")
 
 
-# Patch the two entry points the upstream call-graph resolves by name at run time:
-#   * main() dispatches ``install`` to ``command_install`` looked up in mm's globals;
-#   * mm's own dependency installers (whisper-medium, demucs, converters) call
-#     ``download_file`` in mm's globals — routing them through the resumable version
-#     matches what a single combined module would do.
-# Everything else this module overrides is reached only from command_install below,
-# so it resolves within this module's own namespace and needs no patching.
-mm.download_file = download_file
-mm.command_install = command_install
+def install_package(package: PackageRecord, args: argparse.Namespace) -> None:
+    ensure_hf_package(package)
+    target_dir = validate_relative_path(package.target_directory, "target_directory")
+    models_root = Path(args.models_root)
+    final_dir = models_root / target_dir
+    plan = [(remote, final_dir / stripped_path(remote, package.strip_prefix)) for remote in package.files]
+
+    print(f"selected {package.id} ({package.family})")
+    print(f"repo {package.download['repo']}@{package.download.get('revision', 'main')}")
+    print(f"target {final_dir}")
+    for remote, output in plan:
+        if args.check:
+            size = check_remote_file(package, remote)
+            if size is None and package.download.get("gated") is True:
+                suffix = " gated_access_required"
+            else:
+                suffix = f" size={size}" if size is not None else ""
+            print(f"check {remote}{suffix}")
+        else:
+            print(f"file remote={remote} local={output.relative_to(models_root)}")
+
+    if args.dry_run or args.check:
+        return
+    if final_dir.exists() and not args.overwrite:
+        raise ManagerError(f"target already exists: {final_dir} (use --overwrite)")
+    models_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{package.target_directory.replace('/', '_')}.", dir=models_root))
+    try:
+        for remote, output in plan:
+            download_file(package, remote, staging / output.relative_to(final_dir))
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        staging.rename(final_dir)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    print(f"installed {package.id} -> {final_dir}")
+
+
+def command_list(records: list[PackageRecord], args: argparse.Namespace) -> None:
+    rows = [
+        {
+            "family": record.family,
+            "id": record.id,
+            "display_name": record.display_name,
+            "format": record.format,
+            "precision": record.precision,
+            "default": record.default,
+            "target_directory": record.target_directory,
+            "repo": record.download.get("repo", ""),
+        }
+        for record in records
+    ]
+    if args.json:
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return
+    for row in rows:
+        default = " default" if row["default"] else ""
+        print(f"{row['id']:<44} {row['family']:<24} {row['format']:<11} {row['precision']:<8}{default}")
+
+
+def command_info(records: list[PackageRecord], args: argparse.Namespace) -> None:
+    package = select_package(records, args)
+    row = {
+        "family": package.family,
+        "id": package.id,
+        "display_name": package.display_name,
+        "format": package.format,
+        "precision": package.precision,
+        "default": package.default,
+        "target_directory": package.target_directory,
+        "files": list(package.files),
+        "strip_prefix": package.strip_prefix,
+        "download": package.download,
+    }
+    if args.json:
+        print(json.dumps(row, indent=2, ensure_ascii=False))
+        return
+    print(f"id: {package.id}")
+    print(f"family: {package.family}")
+    print(f"name: {package.display_name}")
+    print(f"format: {package.format}")
+    print(f"precision: {package.precision}")
+    print(f"target: {package.target_directory}")
+    print(f"download: {package.download.get('kind')} {package.download.get('repo', '')}")
+    for remote in package.files:
+        print(f"file: {remote}")
+
+
+def make_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Install audio.cpp model packages from model_specs/*.json.")
+    parser.add_argument("--specs-dir", default=str(DEFAULT_SPECS_DIR), help="directory containing model spec JSON files")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    list_parser = sub.add_parser("list", help="list installable packages")
+    list_parser.add_argument("--json", action="store_true")
+
+    info_parser = sub.add_parser("info", help="show one package or family default")
+    info_parser.add_argument("package")
+    info_parser.add_argument("--format")
+    info_parser.add_argument("--precision")
+    info_parser.add_argument("--json", action="store_true")
+
+    install_parser = sub.add_parser("install", help="install one Hugging Face snapshot package")
+    install_parser.add_argument("package", help="package id or family")
+    install_parser.add_argument("--format")
+    install_parser.add_argument("--precision")
+    install_parser.add_argument("--models-root", default="models")
+    install_parser.add_argument("--overwrite", action="store_true")
+    install_parser.add_argument("--dry-run", action="store_true")
+    install_parser.add_argument("--check", action="store_true", help="check remote files without downloading")
+    return parser
+
+
+def main() -> int:
+    parser = make_parser()
+    args = parser.parse_args()
+    try:
+        records = flatten_packages(load_specs(Path(args.specs_dir)))
+        if args.command == "list":
+            command_list(records, args)
+        elif args.command == "info":
+            command_info(records, args)
+        elif args.command == "install":
+            install_package(select_package(records, args), args)
+        else:
+            raise ManagerError(f"unknown command: {args.command}")
+        return 0
+    except ManagerError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(mm.main())
+    raise SystemExit(main())

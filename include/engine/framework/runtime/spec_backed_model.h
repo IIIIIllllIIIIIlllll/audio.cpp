@@ -9,6 +9,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace engine::runtime {
@@ -30,6 +32,31 @@ inline std::shared_ptr<const engine::model_spec::ModelContract> require_model_co
         throw std::runtime_error(family + " requires a schema v1 model contract");
     }
     return std::make_shared<engine::model_spec::ModelContract>(std::move(*out));
+}
+
+inline void validate_spec_backed_session_options(
+    const SessionOptions & options,
+    const engine::model_spec::ModelContract & contract,
+    std::string_view family,
+    std::string_view model_name) {
+    const std::string family_prefix = std::string(family) + ".";
+    for (const auto & [key, _] : options.options) {
+        if (key.rfind(family_prefix, 0) == 0 &&
+            contract.session_option_keys.find(key) == contract.session_option_keys.end()) {
+            throw std::runtime_error("unknown " + std::string(model_name) + " session option: " + key);
+        }
+    }
+}
+
+inline void validate_spec_backed_request_options(
+    const std::unordered_map<std::string, std::string> & options,
+    const engine::model_spec::ModelContract & contract,
+    std::string_view model_name) {
+    for (const auto & [key, _] : options) {
+        if (contract.request_option_keys.find(key) == contract.request_option_keys.end()) {
+            throw std::runtime_error("unknown " + std::string(model_name) + " request option: " + key);
+        }
+    }
 }
 
 template <typename Assets>

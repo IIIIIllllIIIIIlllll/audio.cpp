@@ -4,7 +4,7 @@ find_directory_gguf() in src/framework/assets/tensor_source.cpp resolves a model
 directory to model.gguf, or to the sole *.gguf in it. The WebUI used to match only
 model.gguf, so an installed GGUF package that keeps its release name
 (vevo2-q8_0.gguf, voxtral-mini-4b-realtime-2602-q8_0.gguf) read as "no GGUF yet" and
-the GGUF tab offered to convert weights that were never downloaded (issue #113).
+the GGUF inspector missed the file that would actually load (issue #113).
 """
 import json
 import os
@@ -75,12 +75,6 @@ class ExistingGgufPathTests(unittest.TestCase):
         open(path, "w").close()
         self.assertEqual(app._existing_gguf_path(_entry(path)), path)
 
-    def test_conversions_still_target_model_gguf(self):
-        # model.gguf is what the loader prefers when a directory holds several, so
-        # conversion output keeps that name even though discovery is now broader.
-        self.assertEqual(app._gguf_output_path(_entry(self.model_dir)),
-                         os.path.join(self.model_dir, "model.gguf"))
-
 
 class GgufStatusTests(unittest.TestCase):
     def test_downloaded_package_reports_the_gguf_it_will_load(self):
@@ -141,23 +135,6 @@ class ServerConfigGgufPathTests(unittest.TestCase):
         cfg = self._read_temp_config(entry)
 
         self.assertEqual(cfg["models"][0]["path"], self.root)
-
-
-class DeleteGgufTests(unittest.TestCase):
-    def test_a_downloaded_package_gguf_is_not_deleted_as_conversion_output(self):
-        root = tempfile.mkdtemp(prefix="audiocpp_webui_gguf_delete_test_")
-        self.addCleanup(shutil.rmtree, root, True)
-        name = "vevo2-q8_0.gguf"
-        target = os.path.join(root, name)
-        open(target, "w").close()
-        entry = _entry(root, download_id="vevo2_gguf")
-        original = app.catalog_by_id
-        app.catalog_by_id = lambda model_id: entry
-        self.addCleanup(setattr, app, "catalog_by_id", original)
-        message, _status = app.delete_gguf("vevo2")
-        self.assertIn(name, message)
-        self.assertTrue(os.path.isfile(target),
-                        "delete_gguf removed a downloaded model package")
 
 
 if __name__ == "__main__":

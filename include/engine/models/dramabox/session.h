@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/framework/runtime/cache_slots.h"
+#include "engine/framework/model_spec/metadata.h"
 #include "engine/framework/runtime/session_base.h"
 #include "engine/models/dramabox/audio_vae.h"
 #include "engine/models/dramabox/assets.h"
@@ -17,6 +18,8 @@
 
 namespace engine::models::dramabox {
 
+std::shared_ptr<runtime::IVoiceModelLoader> make_dramabox_loader();
+
 class DramaBoxSession final
     : public runtime::RuntimeSessionBase
     , public runtime::IOfflineVoiceTaskSession {
@@ -24,7 +27,8 @@ public:
     DramaBoxSession(
         runtime::TaskSpec task,
         runtime::SessionOptions options,
-        std::shared_ptr<const DramaBoxAssets> assets);
+        std::shared_ptr<const DramaBoxAssets> assets,
+        std::shared_ptr<const engine::model_spec::ModelContract> contract);
     ~DramaBoxSession() override;
 
     std::string family() const override;
@@ -71,6 +75,7 @@ private:
 
     runtime::TaskSpec task_;
     std::shared_ptr<const DramaBoxAssets> assets_;
+    std::shared_ptr<const engine::model_spec::ModelContract> contract_;
     DramaBoxPerfMode perf_mode_ = DramaBoxPerfMode::Exact;
     std::unique_ptr<DramaBoxGemmaTokenizer> tokenizer_;
     std::unique_ptr<DramaBoxGemma3PromptRuntime> gemma_prompt_;
@@ -82,6 +87,7 @@ private:
     runtime::CacheSlots<PromptCacheKey, DramaBoxConditioningEncoding, PromptCacheKeyEqual> prompt_conditioning_cache_;
     runtime::CacheSlots<PromptCacheKey, DramaBoxConditioningEncoding, PromptCacheKeyEqual> negative_conditioning_cache_;
     runtime::CacheSlots<ReferenceCacheKey, DramaBoxEncodedReferenceLatents, ReferenceCacheKeyEqual> reference_latents_;
+    bool mem_saver_ = false;
 };
 
 }  // namespace engine::models::dramabox

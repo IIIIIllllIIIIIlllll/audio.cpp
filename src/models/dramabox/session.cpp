@@ -4,6 +4,7 @@
 #include "engine/framework/audio/wav_reader.h"
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/runtime/options.h"
+#include "engine/framework/runtime/spec_backed_model.h"
 #include "engine/framework/sampling/torch_random.h"
 #include "engine/models/dramabox/latent_state.h"
 
@@ -29,6 +30,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr const char * kDefaultNegativePrompt =
     "worst quality, inconsistent, robotic, distorted, noise, static, muffled, unclear, unnatural, monotone";
+constexpr const char * kFamily = "dramabox";
 constexpr float kPi = 3.14159265358979323846F;
 constexpr size_t kMaxPromptConditioningCacheEntries = 32;
 constexpr size_t kMaxReferenceCacheEntries = 8;
@@ -38,6 +40,14 @@ std::shared_ptr<const DramaBoxAssets> require_assets(std::shared_ptr<const Drama
         throw std::runtime_error("DramaBox session requires assets");
     }
     return assets;
+}
+
+std::shared_ptr<const engine::model_spec::ModelContract> require_contract(
+    std::shared_ptr<const engine::model_spec::ModelContract> contract) {
+    if (contract == nullptr) {
+        throw std::runtime_error("DramaBox session requires a model contract");
+    }
+    return contract;
 }
 
 uint64_t mix_reference_hash(uint64_t hash, uint64_t value) {
@@ -82,6 +92,13 @@ DramaBoxPerfMode parse_perf_mode(const std::string & value) {
     throw std::runtime_error("Invalid dramabox.perf_mode: " + value);
 }
 
+bool mem_saver_from_options(const runtime::SessionOptions & options) {
+    if (const auto value = runtime::find_option(options.options, {"dramabox.mem_saver"})) {
+        return runtime::parse_bool_option(*value, "dramabox.mem_saver");
+    }
+    return false;
+}
+
 DramaBoxRequest parse_dramabox_request(const runtime::TaskRequest & request, const DramaBoxConfig & config) {
     DramaBoxRequest out;
     if (request.text_input.has_value()) {
@@ -120,9 +137,6 @@ DramaBoxRequest parse_dramabox_request(const runtime::TaskRequest & request, con
         if (*value != "auto") {
             out.guidance_rescale = runtime::parse_float_option(request.options, {"guidance_rescale"}).value();
         }
-    }
-    if (const auto value = runtime::find_option(request.options, {"denoise_ref"})) {
-        out.denoise_ref = runtime::parse_bool_option(*value, "denoise_ref");
     }
     if (const auto value = runtime::find_option(request.options, {"target_voice"})) {
         out.target_voice = *value;
@@ -234,13 +248,17 @@ runtime::AudioBuffer equal_power_crossfade_concat(
 DramaBoxSession::DramaBoxSession(
     runtime::TaskSpec task,
     runtime::SessionOptions options,
-    std::shared_ptr<const DramaBoxAssets> assets)
+    std::shared_ptr<const DramaBoxAssets> assets,
+    std::shared_ptr<const engine::model_spec::ModelContract> contract)
     : RuntimeSessionBase(std::move(options)),
       task_(task),
       assets_(require_assets(std::move(assets))),
+      contract_(require_contract(std::move(contract))),
       prompt_conditioning_cache_(kMaxPromptConditioningCacheEntries),
       negative_conditioning_cache_(1),
       reference_latents_(kMaxReferenceCacheEntries) {
+    runtime::validate_spec_backed_session_options(this->options(), *contract_, kFamily, "DramaBox");
+    mem_saver_ = mem_saver_from_options(this->options());
     if (task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("DramaBox currently supports offline sessions");
     }
@@ -249,11 +267,6 @@ DramaBoxSession::DramaBoxSession(
     }
     if (const auto it = this->options().options.find("dramabox.perf_mode"); it != this->options().options.end()) {
         perf_mode_ = parse_perf_mode(it->second);
-    }
-    for (const auto & [key, _] : this->options().options) {
-        if (key.rfind("dramabox.", 0) == 0 && key != "dramabox.perf_mode") {
-            throw std::runtime_error("unknown DramaBox session option: " + key);
-        }
     }
     tokenizer_ = std::make_unique<DramaBoxGemmaTokenizer>(assets_);
     gemma_prompt_ = std::make_unique<DramaBoxGemma3PromptRuntime>(
@@ -290,7 +303,7 @@ DramaBoxSession::DramaBoxSession(
 DramaBoxSession::~DramaBoxSession() = default;
 
 std::string DramaBoxSession::family() const {
-    return "dramabox";
+    return kFamily;
 }
 
 runtime::VoiceTaskKind DramaBoxSession::task_kind() const {
@@ -306,13 +319,15 @@ void DramaBoxSession::prepare(const runtime::SessionPreparationRequest & request
         mark_prepared();
         return;
     }
+    runtime::validate_spec_backed_request_options(request.options, *contract_, "DramaBox");
     runtime::TaskRequest task_request;
     task_request.text_input = request.text;
     task_request.voice = request.voice;
     task_request.options = request.options;
     const auto parsed = parse_dramabox_request(task_request, assets_->config);
-    if (parsed.denoise_ref) {
-        throw std::runtime_error("DramaBox denoise_ref uses RE-USE and is not part of this inference-only port");
+    if (mem_saver_) {
+        mark_prepared();
+        return;
     }
     const double duration = parsed.duration_sec > 0.0F
         ? static_cast<double>(parsed.duration_sec)
@@ -364,22 +379,20 @@ void DramaBoxSession::prepare(const runtime::SessionPreparationRequest & request
 
 runtime::TaskResult DramaBoxSession::run(const runtime::TaskRequest & request) {
     require_prepared("DramaBox run");
+    runtime::validate_spec_backed_request_options(request.options, *contract_, "DramaBox");
     const auto wall_start = Clock::now();
     const auto parsed = parse_dramabox_request(request, assets_->config);
-    if (parsed.denoise_ref) {
-        throw std::runtime_error("DramaBox denoise_ref uses RE-USE and is not part of this inference-only port");
-    }
-    engine::debug::timing_log_scalar("dramabox.request.steps", static_cast<double>(parsed.steps));
-    engine::debug::timing_log_scalar("dramabox.request.cfg_scale", static_cast<double>(parsed.cfg_scale));
-    engine::debug::timing_log_scalar(
+    engine::debug::trace_log_scalar("dramabox.request.steps", parsed.steps);
+    engine::debug::trace_log_scalar("dramabox.request.cfg_scale", static_cast<double>(parsed.cfg_scale));
+    engine::debug::trace_log_scalar(
         "dramabox.request.spatio_temporal_guidance_scale",
         static_cast<double>(parsed.spatio_temporal_guidance_scale));
     const double duration = parsed.duration_sec > 0.0F
         ? static_cast<double>(parsed.duration_sec)
         : estimate_dramabox_duration_seconds(parsed.prompt, parsed.duration_scale);
-    engine::debug::timing_log_scalar(
+    engine::debug::trace_log_scalar(
         "dramabox.request.long_form",
-        duration > parsed.audio_chunk_threshold_sec ? 1.0 : 0.0);
+        duration > parsed.audio_chunk_threshold_sec);
     runtime::TaskResult result;
     if (duration > parsed.audio_chunk_threshold_sec) {
         const auto chunks = chunk_prompt_for_duration(
@@ -390,13 +403,13 @@ runtime::TaskResult DramaBoxSession::run(const runtime::TaskRequest & request) {
         if (chunks.empty()) {
             throw std::runtime_error("DramaBox long-form chunker produced no chunks");
         }
-        engine::debug::timing_log_scalar("dramabox.long_form.chunks", static_cast<double>(chunks.size()));
+        engine::debug::trace_log_scalar("dramabox.long_form.chunks", static_cast<int64_t>(chunks.size()));
         std::optional<runtime::AudioBuffer> combined;
         for (size_t index = 0; index < chunks.size(); ++index) {
             auto chunk_request = parsed;
             chunk_request.prompt = chunks[index].text;
             chunk_request.duration_sec = 0.0F;
-            engine::debug::timing_log_scalar("dramabox.long_form.chunk_est_seconds", chunks[index].estimated_duration_seconds);
+            engine::debug::trace_log_scalar("dramabox.long_form.chunk_est_seconds", chunks[index].estimated_duration_seconds);
             auto audio = generate_audio(chunk_request, request);
             combined = combined.has_value()
                 ? std::optional<runtime::AudioBuffer>(
@@ -415,10 +428,10 @@ DramaBoxConditioningEncoding DramaBoxSession::prompt_conditioning(const std::str
     const int64_t sequence_length = assets_->config.gemma.prompt_max_length;
     const PromptCacheKey prompt_key{prompt, sequence_length};
     if (auto * cached = prompt_conditioning_cache_.find(prompt_key)) {
-        engine::debug::timing_log_scalar("dramabox.prompt.cache_hit", 1.0);
+        engine::debug::trace_log_scalar("dramabox.prompt.cache_hit", true);
         return *cached;
     }
-    engine::debug::timing_log_scalar("dramabox.prompt.cache_hit", 0.0);
+    engine::debug::trace_log_scalar("dramabox.prompt.cache_hit", false);
     const auto tokens = tokenizer_->encode(std::vector<std::string>{prompt});
     const auto prompt_features = gemma_prompt_->encode(tokens);
     auto conditioning = prompt_connector_->encode(prompt_features);
@@ -440,8 +453,8 @@ DramaBoxConditioningEncoding DramaBoxSession::prompt_conditioning_for_guidance(
     const auto * cached_negative = negative_conditioning_cache_.find(negative_key);
     const bool prompt_hit = cached_prompt != nullptr;
     const bool negative_shape_hit = cached_negative != nullptr;
-    engine::debug::timing_log_scalar("dramabox.prompt.cache_hit", prompt_hit ? 1.0 : 0.0);
-    engine::debug::timing_log_scalar("dramabox.prompt.negative_cache_hit", negative_shape_hit ? 1.0 : 0.0);
+    engine::debug::trace_log_scalar("dramabox.prompt.cache_hit", prompt_hit);
+    engine::debug::trace_log_scalar("dramabox.prompt.negative_cache_hit", negative_shape_hit);
     if (prompt_hit && negative_shape_hit) {
         return join_positive_negative_conditioning(*cached_prompt, *cached_negative);
     }
@@ -484,11 +497,11 @@ DramaBoxEncodedReferenceLatents DramaBoxSession::encode_reference_latents(
     const bool cacheable_reference = !parsed.target_voice.empty() || inline_key.has_value();
     if (cacheable_reference) {
         if (auto * cached = reference_latents_.find(reference_key)) {
-            engine::debug::timing_log_scalar("dramabox.reference.cache_hit", 1.0);
+            engine::debug::trace_log_scalar("dramabox.reference.cache_hit", true);
             return *cached;
         }
     }
-    engine::debug::timing_log_scalar("dramabox.reference.cache_hit", 0.0);
+    engine::debug::trace_log_scalar("dramabox.reference.cache_hit", false);
     const auto ref_audio = read_reference_audio(parsed, request);
     int64_t ref_mel_frames = 0;
     const auto ref_mel = reference_log_mel(
@@ -509,11 +522,9 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
         ? static_cast<double>(parsed.duration_sec)
         : estimate_dramabox_duration_seconds(parsed.prompt, parsed.duration_scale);
     const auto latent_shape = dramabox_target_latent_shape(duration, assets_->config);
-    engine::debug::timing_log_scalar("dramabox.request.latent_tokens", static_cast<double>(latent_shape.token_count()));
-    const auto state_start = Clock::now();
+    engine::debug::trace_log_scalar("dramabox.request.latent_tokens", latent_shape.token_count());
     auto state = create_dramabox_initial_state(latent_shape, assets_->config);
     const int64_t target_tokens = state.tokens;
-    engine::debug::timing_log_scalar("dramabox.host.initial_state_ms", engine::debug::elapsed_ms(state_start, Clock::now()));
     int64_t ref_tokens = 0;
     if (!parsed.target_voice.empty() || parsed.has_inline_target_voice) {
         const auto reference_start = Clock::now();
@@ -521,8 +532,14 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
         ref_tokens = ref_latent.tokens;
         append_reference_latents(state, ref_latent, assets_->config);
         engine::debug::timing_log_scalar("dramabox.reference.total_ms", engine::debug::elapsed_ms(reference_start, Clock::now()));
+        if (mem_saver_) {
+            const auto release_start = Clock::now();
+            audio_encoder_->release_runtime_state();
+            engine::debug::timing_log_scalar(
+                "dramabox.audio_vae_encoder.release_runtime_ms",
+                engine::debug::elapsed_ms(release_start, Clock::now()));
+        }
     }
-    const auto noise_start = Clock::now();
     const auto rng_policy = engine::sampling::resolve_torch_cuda_sampling_policy(
         execution_context().backend_type(),
         execution_context().config().device,
@@ -538,21 +555,27 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
     for (size_t i = 0; i < state.latent.size(); ++i) {
         state.latent[i] = noise[i] * state.denoise_mask[i] + state.clean_latent[i] * (1.0F - state.denoise_mask[i]);
     }
-    engine::debug::timing_log_scalar("dramabox.host.initial_noise_ms", engine::debug::elapsed_ms(noise_start, Clock::now()));
 
     const bool cfg_enabled = parsed.cfg_scale > 1.0F;
     const bool stg_enabled = parsed.spatio_temporal_guidance_scale > 0.0F;
     const int64_t branch_count = 1 + (cfg_enabled ? 1 : 0) + (stg_enabled ? 1 : 0);
+    engine::debug::trace_log_scalar("dramabox.request.branch_count", branch_count);
+    engine::debug::trace_log_scalar("dramabox.request.cfg_enabled", cfg_enabled);
+    engine::debug::trace_log_scalar("dramabox.request.stg_enabled", stg_enabled);
     const auto prompt_start = Clock::now();
     auto conditioning = prompt_conditioning_for_guidance(parsed.prompt, negative_prompt_for_request(parsed), cfg_enabled);
     engine::debug::timing_log_scalar("dramabox.prompt.total_ms", engine::debug::elapsed_ms(prompt_start, Clock::now()));
+    if (mem_saver_) {
+        const auto release_start = Clock::now();
+        prompt_connector_->release_runtime_state();
+        gemma_prompt_->release_runtime_state();
+        engine::debug::timing_log_scalar(
+            "dramabox.prompt.release_runtime_ms",
+            engine::debug::elapsed_ms(release_start, Clock::now()));
+    }
 
     const auto sampler_start = Clock::now();
-    const auto sigmas_start = Clock::now();
     const auto sigmas = make_dramabox_ltx2_sigmas(parsed.steps, 128);
-    engine::debug::timing_log_scalar("dramabox.sampler.host.sigmas_ms", engine::debug::elapsed_ms(sigmas_start, Clock::now()));
-    const auto static_prepare_start = Clock::now();
-    const auto branch_conditioning_start = Clock::now();
     std::vector<float> branch_conditioning_features =
         make_branch_conditioning_features(conditioning, branch_count, cfg_enabled, stg_enabled);
     DramaBoxConditioningEncoding branch_conditioning;
@@ -560,10 +583,6 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
     branch_conditioning.tokens = conditioning.tokens;
     branch_conditioning.hidden_size = conditioning.hidden_size;
     branch_conditioning.features = std::move(branch_conditioning_features);
-    engine::debug::timing_log_scalar(
-        "dramabox.sampler.host.branch_conditioning_ms",
-        engine::debug::elapsed_ms(branch_conditioning_start, Clock::now()));
-    const auto rope_start = Clock::now();
     std::vector<float> rope_cos;
     std::vector<float> rope_sin;
     make_dramabox_audio_rope_repeated(
@@ -573,10 +592,10 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
         assets_->config,
         rope_cos,
         rope_sin);
-    engine::debug::timing_log_scalar("dramabox.sampler.host.rope_ms", engine::debug::elapsed_ms(rope_start, Clock::now()));
-    engine::debug::timing_log_scalar(
-        "dramabox.sampler.host.static_prepare_ms",
-        engine::debug::elapsed_ms(static_prepare_start, Clock::now()));
+    std::vector<float> timestep_mask(static_cast<size_t>(state.tokens), 0.0F);
+    for (int64_t token = 0; token < state.tokens; ++token) {
+        timestep_mask[static_cast<size_t>(token)] = state.denoise_mask[static_cast<size_t>(token * 128)];
+    }
     dit_->prepare_static_inputs(
         branch_count,
         state.tokens,
@@ -584,38 +603,28 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
         ref_tokens,
         branch_conditioning,
         rope_cos,
-        rope_sin);
+        rope_sin,
+        timestep_mask);
     const float guidance_rescale =
         parsed.guidance_rescale < 0.0F ? auto_rescale_for_cfg(parsed.cfg_scale) : parsed.guidance_rescale;
-    double step_input_host_ms = 0.0;
-    double guidance_host_ms = 0.0;
-    std::vector<float> timestep_features;
     std::vector<float> sigma_values(1, 0.0F);
     std::vector<float> sigma_features;
-    std::vector<float> zero_values(1, 0.0F);
-    std::vector<float> zero_features;
-    fill_dramabox_timestep_features(zero_values, zero_features);
     DramaBoxDitInputs dit_inputs;
     dit_inputs.batch = branch_count;
     dit_inputs.tokens = state.tokens;
     dit_inputs.stg_enabled = stg_enabled;
     dit_inputs.ref_tokens = ref_tokens;
     dit_inputs.latent = &state.latent;
-    dit_inputs.timestep_features = &timestep_features;
     dit_inputs.sigma_features = &sigma_features;
     std::vector<float> guided_cond;
     std::vector<float> guided_pred;
     for (int64_t step = 0; step < parsed.steps; ++step) {
         const float sigma = sigmas[static_cast<size_t>(step)];
         const float sigma_next = sigmas[static_cast<size_t>(step + 1)];
-        const auto step_input_start = Clock::now();
         const float scaled_sigma = sigma * static_cast<float>(assets_->config.transformer.timestep_scale_multiplier);
         sigma_values[0] = scaled_sigma;
         fill_dramabox_timestep_features(sigma_values, sigma_features);
-        fill_token_timestep_features(state, scaled_sigma, sigma_features, zero_features, timestep_features);
-        step_input_host_ms += engine::debug::elapsed_ms(step_input_start, Clock::now());
         auto velocity = dit_->forward(dit_inputs);
-        const auto guidance_start = Clock::now();
         guided_prediction_from_velocity(
             velocity,
             state,
@@ -629,10 +638,14 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
             guided_cond,
             guided_pred);
         post_process_and_euler_step(state, guided_pred, sigma, sigma_next);
-        guidance_host_ms += engine::debug::elapsed_ms(guidance_start, Clock::now());
     }
-    engine::debug::timing_log_scalar("dramabox.sampler.host.step_input_ms", step_input_host_ms);
-    engine::debug::timing_log_scalar("dramabox.sampler.host.guidance_ms", guidance_host_ms);
+    if (mem_saver_) {
+        const auto release_start = Clock::now();
+        dit_->release_runtime_state();
+        engine::debug::timing_log_scalar(
+            "dramabox.dit.release_runtime_ms",
+            engine::debug::elapsed_ms(release_start, Clock::now()));
+    }
     engine::debug::timing_log_scalar("dramabox.sampler.total_ms", engine::debug::elapsed_ms(sampler_start, Clock::now()));
 
     const auto decode_start = Clock::now();
@@ -648,6 +661,14 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
     }
     const auto mel = audio_decoder_->decode_to_device(target_latent, 1, target_tokens);
     const auto audio = vocoder_->synthesize(mel);
+    if (mem_saver_) {
+        const auto release_start = Clock::now();
+        vocoder_->release_runtime_state();
+        audio_decoder_->release_runtime_state();
+        engine::debug::timing_log_scalar(
+            "dramabox.decode.release_runtime_ms",
+            engine::debug::elapsed_ms(release_start, Clock::now()));
+    }
     engine::debug::timing_log_scalar("dramabox.decode.total_ms", engine::debug::elapsed_ms(decode_start, Clock::now()));
 
     runtime::TaskResult result;
@@ -656,6 +677,30 @@ runtime::AudioBuffer DramaBoxSession::generate_audio(const DramaBoxRequest & par
     buffer.channels = static_cast<int>(audio.channels);
     buffer.samples = engine::audio::interleave_planar_channels(audio.waveform, static_cast<int>(audio.channels), audio.samples);
     return buffer;
+}
+
+namespace {
+
+std::unique_ptr<runtime::IVoiceTaskSession> create_dramabox_session(
+    const runtime::TaskSpec & task,
+    const runtime::SessionOptions & options,
+    std::shared_ptr<const DramaBoxAssets> assets,
+    std::shared_ptr<const engine::model_spec::ModelContract> contract) {
+    return std::make_unique<DramaBoxSession>(
+        task,
+        options,
+        std::move(assets),
+        std::move(contract));
+}
+
+}  // namespace
+
+std::shared_ptr<runtime::IVoiceModelLoader> make_dramabox_loader() {
+    runtime::SpecBackedVoiceModelConfig<DramaBoxAssets> config;
+    config.family = kFamily;
+    config.load_assets = load_dramabox_assets;
+    config.create_session = create_dramabox_session;
+    return runtime::make_spec_backed_voice_loader(std::move(config));
 }
 
 }  // namespace engine::models::dramabox

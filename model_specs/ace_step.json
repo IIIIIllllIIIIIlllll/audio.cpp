@@ -12,7 +12,6 @@
     {
       "id": "ace_step_turbo_q8_0",
       "display_name": "ACE-Step 1.5 Turbo Q8_0 GGUF",
-      "default": true,
       "format": "gguf",
       "precision": "q8_0",
       "target_directory": "ACE-Step1.5-GGUF",
@@ -24,6 +23,7 @@
     {
       "id": "ace_step_turbo_bf16",
       "display_name": "ACE-Step 1.5 Turbo BF16 GGUF",
+      "default": true,
       "format": "gguf",
       "precision": "bf16",
       "target_directory": "ACE-Step1.5-GGUF",

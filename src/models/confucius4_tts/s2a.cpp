@@ -434,10 +434,11 @@ ConfuciusS2ALengthRegulatorWeights load_length_regulator(
             true));
     }
     for (int64_t i : {1, 4, 7, 10}) {
-        weights.norms.push_back({
-            store.load_f32_tensor(source, "length_regulator.model." + std::to_string(i) + ".weight", {kHidden}),
-            store.load_f32_tensor(source, "length_regulator.model." + std::to_string(i) + ".bias", {kHidden}),
-        });
+        weights.norms.push_back(binding::norm_from_source(
+            store,
+            source,
+            "length_regulator.model." + std::to_string(i),
+            kHidden));
     }
     weights.output = binding::conv1d_from_source(
         store,

@@ -75,7 +75,7 @@ To hand control back to the environment variable, just delete `webui/configs/ui_
   write those by hand.
   Currently installed ids: `qwen3-tts`, `qwen3-asr`, `vibevoice`, `omnivoice`, `pocket-tts`.
   An uninstalled id shows "not installed"; you can download it in the WebUI, or install it with
-  `python tools/model_manager.py install <download_id>` (see `models_catalog.json`).
+  `python webui/model_manager_webui.py install <download_id>` (the package comes from `model_specs/`).
 - **Automatic backend selection:** if CUDA (an NVIDIA driver) is detected, GPU is used; otherwise it falls back
   to CPU. To force a backend, set `AUDIOCPP_BACKEND=gpu` (= cuda), `AUDIOCPP_BACKEND=cpu`, or
   `AUDIOCPP_BACKEND=metal`.
@@ -120,7 +120,7 @@ Starts the Gradio web interface (`webui.py`); open **http://127.0.0.1:7860** in 
   only the low-VRAM *warning* stays CPU-quiet, since there is no VRAM to fall short of. A download the `models/`
   volume cannot hold is refused outright — no Confirm button is offered — and a fit that leaves under 20 GB free is
   flagged but still allowed.
-  Sizes are unavailable for converter installs and for gated repos without a token; those download as before.
+  Sizes are unavailable for gated repos without a token; those download as before.
 - **While it runs**, progress is shown against the package total ("Downloaded 5.00 GB of 17.00 GB (29%)"), and the
   low-VRAM and low-disk warnings are repeated on every refresh rather than scrolling away after the first one.
   Disk is judged against the bytes still to fetch, so a healthy download does not drift into a false alarm as free
@@ -250,7 +250,7 @@ An empty `route` follows the task default (a vc entry → `v2_vc`, an svc entry 
 **Vevo2 (voice conversion):** the three Vevo2 entries install the self-contained Q8_0 GGUF package
 (`vevo2_gguf` → `models/Vevo2-GGUF`, ~3.2 GB), which needs no sibling `whisper-medium` download. An earlier
 safetensors install in `models/Vevo2` is no longer what these entries point at; it still works from the CLI with
-`--model models/Vevo2`, or reinstall it with `python3 tools/model_manager.py install vevo2`.
+`--model models/Vevo2`. The WebUI download installs the GGUF package instead.
 Vevo2 defaults to `route=style_preserved_vc` (preserves the source speech's speaking style,
 changing only the voice). An empty `route` follows the entry's task default (vc → style_preserved_vc, svc →
 style_preserved_svc, s2s → editing) and must match the selected entry's task; `style_converted_*` / `editing` need
@@ -293,29 +293,15 @@ and a reference voice longer than ~10s is auto-truncated (an 8G VRAM limit).
   in the advanced parameters, choose `voice` (M1-M5 male / F1-F5 female) and `speaking_rate`; reference-audio cloning is not supported.
 - **Model downloads** run in the background with auto-refreshing progress; you can also click "📊 Download progress" to check manually.
 
-### GGUF conversion, inspection, and loading
+### GGUF inspection and loading
 
-Every task page's "Model management" card offers the same set of GGUF operations: pick a type (default `q8_0`) then click
-"🧊 Convert GGUF", which writes the result as `model.gguf` in the selected model's directory; an existing file is not
-overwritten. Clicking "🔎 Inspect GGUF" runs `audiocpp_gguf.exe --inspect` and shows the package metadata on the page.
+Every task page's "Model management" card can inspect the selected GGUF package. Clicking "🔎 Inspect GGUF" runs
+`audiocpp_gguf.exe --inspect` and shows the package metadata on the page.
 For models with native GGUF support, a normal "📥 Load model" automatically prefers the GGUF in the model directory —
 `model.gguf` if it is there, otherwise the single `*.gguf` in the directory, so a downloaded package keeps its release
 name (`vevo2-q8_0.gguf`). A directory holding several GGUFs and no `model.gguf` is ambiguous and neither the page nor the
-server picks one. Clicking "🗑️ Delete GGUF" removes conversion output (and any leftover `.tmp` of the same name) and the
-next normal load restores the original weights; a GGUF that is itself the downloaded package is left alone — re-download
-or remove it from the model list instead.
-
-- The converter looks in order for the dev builds' `build\windows-cuda-release\bin` / `build\windows-cpu-release\bin`, and
-  the bundle's `audiocpp-portable\gpu` / `audiocpp-portable\cpu`; you can also point `AUDIOCPP_GGUF` at a custom `audiocpp_gguf.exe`.
-- The page only marks a model as "convertible" when it has native GGUF model-spec support and the conversion inputs can be
-  unambiguously assembled; the presence of `.safetensors` does not mean the matching C++ backend supports GGUF. A model
-  that supports conversion but isn't fully installed shows "convertible, but model not fully installed" up front, to help
-  you decide before downloading; Stable Audio currently still uses original weights and is not marked convertible.
-- The page automatically handles a supported single `model.safetensors`, sharded indexes, and Qwen3-TTS composite weights.
-  Other composite models that need multiple named `--input namespace=...` should still use the command line, to avoid the
-  UI guessing the wrong weight namespace.
-- Only audio.cpp-native GGUF can be loaded; quantization compatibility varies by model and inference route. Even a
-  successful conversion should be checked with a short sample first.
+server picks one. The WebUI no longer converts safetensors; downloads install the default GGUF package declared in
+`model_specs/`. Already-installed legacy/safetensors model directories can still be loaded from the catalog path.
 
 ---
 
@@ -339,7 +325,7 @@ Common ones:
 | `supertonic` | supertonic | tts | Supertonic 3 (preset voices, no Chinese) |
 
 An uninstalled id prompts at runtime; you can click "download" in the WebUI, or run
-`python tools\model_manager.py install <download_id> --models-root <bundle>\models`.
+`python webui\model_manager_webui.py install <download_id> --models-root <bundle>\models`.
 
 ---
 

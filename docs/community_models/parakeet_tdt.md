@@ -1,5 +1,8 @@
 # Parakeet-TDT 0.6B v3
 
+Default model-manager downloads use the published GGUF package when available;
+the original source/conversion instructions below remain valid for manual use.
+
 FastConformer-TDT ASR port of NVIDIA's [`nvidia/parakeet-tdt-0.6b-v3`](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 (0.6B params, 25 European languages with auto language detection). The default
 package uses the repository's Transformers-compatible `model.safetensors`

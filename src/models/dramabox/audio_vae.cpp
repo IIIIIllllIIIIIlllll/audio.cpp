@@ -8,8 +8,9 @@
 #include "engine/framework/debug/profiler.h"
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/conv_modules.h"
-#include "engine/framework/modules/primitive_modules.h"
+#include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/structural_modules.h"
+#include "engine/framework/modules/weight_binding.h"
 
 #include <ggml-alloc.h>
 
@@ -39,24 +40,7 @@ struct GgmlContextDeleter {
     }
 };
 
-modules::Conv2dWeights load_conv2d(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    assets::TensorStorageType storage_type,
-    int64_t out_channels,
-    int64_t in_channels,
-    int64_t kernel) {
-    const auto conv_storage_type = storage_type == assets::TensorStorageType::Native
-        ? assets::TensorStorageType::F32
-        : storage_type;
-    return {
-        store.load_tensor(source, prefix + ".weight", conv_storage_type, {out_channels, in_channels, kernel, kernel}),
-        store.load_tensor(source, prefix + ".bias", assets::TensorStorageType::F32, {out_channels}),
-    };
-}
-
-DramaBoxVaeResnetBlockWeights load_block(
+DramaBoxVaeResnetBlockWeights load_vae_resnet_block(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     const std::string & prefix,
@@ -64,98 +48,40 @@ DramaBoxVaeResnetBlockWeights load_block(
     int64_t in_channels,
     int64_t out_channels) {
     DramaBoxVaeResnetBlockWeights weights;
-    weights.in_channels = in_channels;
-    weights.out_channels = out_channels;
-    weights.conv1 = load_conv2d(store, source, prefix + ".conv1.conv", storage_type, out_channels, in_channels, 3);
-    weights.conv2 = load_conv2d(store, source, prefix + ".conv2.conv", storage_type, out_channels, out_channels, 3);
+    weights.config = {in_channels, out_channels, 3, 1, kPixelNormEps};
+    weights.block.conv1 = modules::binding::conv2d_from_source(
+        store,
+        source,
+        prefix + ".conv1.conv",
+        storage_type,
+        out_channels,
+        in_channels,
+        3,
+        3,
+        true);
+    weights.block.conv2 = modules::binding::conv2d_from_source(
+        store,
+        source,
+        prefix + ".conv2.conv",
+        storage_type,
+        out_channels,
+        out_channels,
+        3,
+        3,
+        true);
     if (in_channels != out_channels) {
-        weights.shortcut = load_conv2d(
+        weights.block.shortcut = modules::binding::conv2d_from_source(
             store,
             source,
             prefix + ".nin_shortcut.conv",
             storage_type,
             out_channels,
             in_channels,
-            1);
+            1,
+            1,
+            true);
     }
     return weights;
-}
-
-core::TensorValue causal_conv2d(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const modules::Conv2dWeights & weights,
-    int64_t in_channels,
-    int64_t out_channels,
-    int64_t kernel) {
-    const int64_t pad_h = kernel - 1;
-    const int64_t pad_w = kernel - 1;
-    return modules::CausalConv2dModule({
-        {
-            in_channels,
-            out_channels,
-            kernel,
-            kernel,
-            1,
-            1,
-            0,
-            0,
-            1,
-            1,
-            true,
-        },
-        pad_w / 2,
-        pad_w - pad_w / 2,
-        pad_h,
-        0,
-    }).build(ctx, input, weights);
-}
-
-core::TensorValue pixel_norm(core::ModuleBuildContext & ctx, const core::TensorValue & input) {
-    // Keep this local until the framework PixelNorm handles DramaBox's 4-D VAE layout.
-    const auto x = core::ensure_backend_addressable_layout(ctx, input);
-    auto squared = core::wrap_tensor(ggml_sqr(ctx.ggml, x.tensor), x.shape, GGML_TYPE_F32);
-    auto mean = modules::ReduceMeanModule({1}).build(ctx, squared);
-    auto denom = core::wrap_tensor(
-        ggml_sqrt(ctx.ggml, ggml_scale_bias(ctx.ggml, core::ensure_backend_addressable_layout(ctx, mean).tensor, 1.0F, kPixelNormEps)),
-        mean.shape,
-        GGML_TYPE_F32);
-    denom = modules::RepeatModule({x.shape}).build(ctx, denom);
-    return core::wrap_tensor(
-        ggml_div(ctx.ggml, x.tensor, core::ensure_backend_addressable_layout(ctx, denom).tensor),
-        x.shape,
-        GGML_TYPE_F32);
-}
-
-core::TensorValue run_block(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const DramaBoxVaeResnetBlockWeights & weights) {
-    auto h = pixel_norm(ctx, input);
-    h = modules::SiluModule{}.build(ctx, h);
-    h = causal_conv2d(ctx, h, weights.conv1, weights.in_channels, weights.out_channels, 3);
-    h = pixel_norm(ctx, h);
-    h = modules::SiluModule{}.build(ctx, h);
-    h = causal_conv2d(ctx, h, weights.conv2, weights.out_channels, weights.out_channels, 3);
-    auto residual = core::ensure_backend_addressable_layout(ctx, input);
-    if (weights.shortcut.has_value()) {
-        residual = causal_conv2d(ctx, residual, *weights.shortcut, weights.in_channels, weights.out_channels, 1);
-    }
-    return modules::AddModule{}.build(ctx, residual, h);
-}
-
-core::TensorValue run_upsample(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const modules::Conv2dWeights & weights,
-    int64_t channels,
-    core::TensorValue * nearest_output = nullptr) {
-    auto x = modules::NearestUpsample2dModule({input.shape.dims[2] * 2, input.shape.dims[3] * 2}).build(ctx, input);
-    if (nearest_output != nullptr) {
-        *nearest_output = x;
-    }
-    x = causal_conv2d(ctx, x, weights, channels, channels, 3);
-    return core::ensure_backend_addressable_layout(ctx, modules::SliceModule({2, 1, x.shape.dims[2] - 1}).build(ctx, x));
 }
 
 core::TensorValue run_downsample(
@@ -315,27 +241,34 @@ DramaBoxAudioVaeDecoderWeights load_dramabox_audio_vae_decoder_weights(
     weights.latent_std = source.require_f32(
         "audio_vae.per_channel_statistics.std-of-means",
         {config.latent_channels * config.latent_mel_bins});
+    const auto conv_storage_type = weight_storage_type == assets::TensorStorageType::Native
+        ? assets::TensorStorageType::F32
+        : weight_storage_type;
     const int64_t base = config.ch;
     const int64_t high = base * config.ch_mult.back();
-    weights.conv_in = load_conv2d(*weights.store, source, "audio_vae.decoder.conv_in.conv", weight_storage_type, high, config.latent_channels, 3);
-    weights.mid_block_1 = load_block(*weights.store, source, "audio_vae.decoder.mid.block_1", weight_storage_type, high, high);
-    weights.mid_block_2 = load_block(*weights.store, source, "audio_vae.decoder.mid.block_2", weight_storage_type, high, high);
+    weights.conv_in = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.decoder.conv_in.conv", conv_storage_type, high, config.latent_channels, 3, 3, true);
+    weights.mid_block_1 = load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.mid.block_1", conv_storage_type, high, high);
+    weights.mid_block_2 = load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.mid.block_2", conv_storage_type, high, high);
     weights.up.resize(3);
     weights.up[2].channels = high;
-    weights.up[2].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.2.block.0", weight_storage_type, high, high));
-    weights.up[2].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.2.block.1", weight_storage_type, high, high));
-    weights.up[2].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.2.block.2", weight_storage_type, high, high));
-    weights.up[2].upsample = load_conv2d(*weights.store, source, "audio_vae.decoder.up.2.upsample.conv.conv", weight_storage_type, high, high, 3);
+    weights.up[2].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.2.block.0", conv_storage_type, high, high));
+    weights.up[2].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.2.block.1", conv_storage_type, high, high));
+    weights.up[2].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.2.block.2", conv_storage_type, high, high));
+    weights.up[2].upsample = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.decoder.up.2.upsample.conv.conv", conv_storage_type, high, high, 3, 3, true);
     weights.up[1].channels = high / 2;
-    weights.up[1].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.1.block.0", weight_storage_type, high, high / 2));
-    weights.up[1].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.1.block.1", weight_storage_type, high / 2, high / 2));
-    weights.up[1].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.1.block.2", weight_storage_type, high / 2, high / 2));
-    weights.up[1].upsample = load_conv2d(*weights.store, source, "audio_vae.decoder.up.1.upsample.conv.conv", weight_storage_type, high / 2, high / 2, 3);
+    weights.up[1].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.1.block.0", conv_storage_type, high, high / 2));
+    weights.up[1].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.1.block.1", conv_storage_type, high / 2, high / 2));
+    weights.up[1].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.1.block.2", conv_storage_type, high / 2, high / 2));
+    weights.up[1].upsample = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.decoder.up.1.upsample.conv.conv", conv_storage_type, high / 2, high / 2, 3, 3, true);
     weights.up[0].channels = base;
-    weights.up[0].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.0.block.0", weight_storage_type, high / 2, base));
-    weights.up[0].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.0.block.1", weight_storage_type, base, base));
-    weights.up[0].blocks.push_back(load_block(*weights.store, source, "audio_vae.decoder.up.0.block.2", weight_storage_type, base, base));
-    weights.conv_out = load_conv2d(*weights.store, source, "audio_vae.decoder.conv_out.conv", weight_storage_type, config.out_channels, base, 3);
+    weights.up[0].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.0.block.0", conv_storage_type, high / 2, base));
+    weights.up[0].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.0.block.1", conv_storage_type, base, base));
+    weights.up[0].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.decoder.up.0.block.2", conv_storage_type, base, base));
+    weights.conv_out = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.decoder.conv_out.conv", conv_storage_type, config.out_channels, base, 3, 3, true);
     weights.store->upload();
     return weights;
 }
@@ -360,23 +293,30 @@ DramaBoxAudioVaeEncoderWeights load_dramabox_audio_vae_encoder_weights(
     weights.latent_std = source.require_f32(
         "audio_vae.per_channel_statistics.std-of-means",
         {config.latent_channels * config.latent_mel_bins});
+    const auto conv_storage_type = weight_storage_type == assets::TensorStorageType::Native
+        ? assets::TensorStorageType::F32
+        : weight_storage_type;
     const int64_t base = config.ch;
-    weights.conv_in = load_conv2d(*weights.store, source, "audio_vae.encoder.conv_in.conv", weight_storage_type, base, config.out_channels, 3);
+    weights.conv_in = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.encoder.conv_in.conv", conv_storage_type, base, config.out_channels, 3, 3, true);
     weights.down.resize(3);
     weights.down[0].channels = base;
-    weights.down[0].blocks.push_back(load_block(*weights.store, source, "audio_vae.encoder.down.0.block.0", weight_storage_type, base, base));
-    weights.down[0].blocks.push_back(load_block(*weights.store, source, "audio_vae.encoder.down.0.block.1", weight_storage_type, base, base));
-    weights.down[0].downsample = load_conv2d(*weights.store, source, "audio_vae.encoder.down.0.downsample.conv", weight_storage_type, base, base, 3);
+    weights.down[0].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.down.0.block.0", conv_storage_type, base, base));
+    weights.down[0].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.down.0.block.1", conv_storage_type, base, base));
+    weights.down[0].downsample = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.encoder.down.0.downsample.conv", conv_storage_type, base, base, 3, 3, true);
     weights.down[1].channels = base * 2;
-    weights.down[1].blocks.push_back(load_block(*weights.store, source, "audio_vae.encoder.down.1.block.0", weight_storage_type, base, base * 2));
-    weights.down[1].blocks.push_back(load_block(*weights.store, source, "audio_vae.encoder.down.1.block.1", weight_storage_type, base * 2, base * 2));
-    weights.down[1].downsample = load_conv2d(*weights.store, source, "audio_vae.encoder.down.1.downsample.conv", weight_storage_type, base * 2, base * 2, 3);
+    weights.down[1].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.down.1.block.0", conv_storage_type, base, base * 2));
+    weights.down[1].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.down.1.block.1", conv_storage_type, base * 2, base * 2));
+    weights.down[1].downsample = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.encoder.down.1.downsample.conv", conv_storage_type, base * 2, base * 2, 3, 3, true);
     weights.down[2].channels = base * 4;
-    weights.down[2].blocks.push_back(load_block(*weights.store, source, "audio_vae.encoder.down.2.block.0", weight_storage_type, base * 2, base * 4));
-    weights.down[2].blocks.push_back(load_block(*weights.store, source, "audio_vae.encoder.down.2.block.1", weight_storage_type, base * 4, base * 4));
-    weights.mid_block_1 = load_block(*weights.store, source, "audio_vae.encoder.mid.block_1", weight_storage_type, base * 4, base * 4);
-    weights.mid_block_2 = load_block(*weights.store, source, "audio_vae.encoder.mid.block_2", weight_storage_type, base * 4, base * 4);
-    weights.conv_out = load_conv2d(*weights.store, source, "audio_vae.encoder.conv_out.conv", weight_storage_type, config.latent_channels * 2, base * 4, 3);
+    weights.down[2].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.down.2.block.0", conv_storage_type, base * 2, base * 4));
+    weights.down[2].blocks.push_back(load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.down.2.block.1", conv_storage_type, base * 4, base * 4));
+    weights.mid_block_1 = load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.mid.block_1", conv_storage_type, base * 4, base * 4);
+    weights.mid_block_2 = load_vae_resnet_block(*weights.store, source, "audio_vae.encoder.mid.block_2", conv_storage_type, base * 4, base * 4);
+    weights.conv_out = modules::binding::conv2d_from_source(
+        *weights.store, source, "audio_vae.encoder.conv_out.conv", conv_storage_type, config.latent_channels * 2, base * 4, 3, 3, true);
     weights.store->upload();
     return weights;
 }
@@ -486,21 +426,26 @@ private:
         ggml_set_input(input_.tensor);
         core::ModuleBuildContext build_ctx{ctx_.get(), "dramabox.audio_vae", backend_type_};
         auto x = input_;
-        x = causal_conv2d(build_ctx, x, weights_.conv_in, config.latent_channels, config.ch * config.ch_mult.back(), 3);
-        x = run_block(build_ctx, x, weights_.mid_block_1);
-        x = run_block(build_ctx, x, weights_.mid_block_2);
+        x = modules::SameWidthCausalConv2dModule({config.latent_channels, config.ch * config.ch_mult.back(), 3, true})
+                .build(build_ctx, x, weights_.conv_in);
+        x = modules::PixelNormCausalConv2dResBlockModule(weights_.mid_block_1.config)
+                .build(build_ctx, x, weights_.mid_block_1.block);
+        x = modules::PixelNormCausalConv2dResBlockModule(weights_.mid_block_2.config)
+                .build(build_ctx, x, weights_.mid_block_2.block);
         for (int64_t level = 2; level >= 0; --level) {
             const auto & stage = weights_.up[static_cast<size_t>(level)];
             for (const auto & block : stage.blocks) {
-                x = run_block(build_ctx, x, block);
+                x = modules::PixelNormCausalConv2dResBlockModule(block.config).build(build_ctx, x, block.block);
             }
             if (stage.upsample.has_value()) {
-                x = run_upsample(build_ctx, x, *stage.upsample, stage.channels, nullptr);
+                x = modules::CausalConv2dUpsampleModule({stage.channels, 3, 2, 2, 1, 0})
+                        .build(build_ctx, x, *stage.upsample);
             }
         }
-        x = pixel_norm(build_ctx, x);
+        x = modules::PixelNormModule({1, kPixelNormEps}).build(build_ctx, x);
         x = modules::SiluModule{}.build(build_ctx, x);
-        x = causal_conv2d(build_ctx, x, weights_.conv_out, config.ch, config.out_channels, 3);
+        x = modules::SameWidthCausalConv2dModule({config.ch, config.out_channels, 3, true})
+                .build(build_ctx, x, weights_.conv_out);
         x = modules::SliceModule({2, 0, output_frames_}).build(build_ctx, x);
         x = modules::SliceModule({3, 0, config.mel_bins}).build(build_ctx, x);
         output_ = core::ensure_backend_addressable_layout(build_ctx, x).tensor;
@@ -509,7 +454,7 @@ private:
         graph_ = ggml_new_graph_custom(ctx_.get(), kVaeGraphNodeCapacity, false);
         ggml_build_forward_expand(graph_, output_);
         debug::timing_log_scalar("dramabox.audio_vae.graph.expand_ms", debug::elapsed_ms(expand_start, Clock::now()));
-        debug::timing_log_scalar("dramabox.audio_vae.graph.nodes", static_cast<double>(ggml_graph_n_nodes(graph_)));
+        debug::trace_log_scalar("dramabox.audio_vae.graph.nodes", static_cast<int64_t>(ggml_graph_n_nodes(graph_)));
         const auto alloc_start = Clock::now();
         gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
         if (gallocr_ == nullptr ||
@@ -582,6 +527,11 @@ DramaBoxDecodedMel DramaBoxAudioVaeDecoderRuntime::decode_to_device(
     int64_t latent_frames) const {
     prepare(batch, latent_frames);
     return graph_->decode(patch_latents, batch, latent_frames, false);
+}
+
+void DramaBoxAudioVaeDecoderRuntime::release_runtime_state() const {
+    graph_.reset();
+    weights_.reset();
 }
 
 class DramaBoxAudioVaeEncoderRuntime::Graph {
@@ -673,21 +623,25 @@ private:
             GGML_TYPE_F32);
         ggml_set_input(input_.tensor);
         core::ModuleBuildContext build_ctx{ctx_.get(), "dramabox.audio_vae_encoder", backend_type_};
-        auto x = causal_conv2d(build_ctx, input_, weights_.conv_in, config.out_channels, config.ch, 3);
+        auto x = modules::SameWidthCausalConv2dModule({config.out_channels, config.ch, 3, true})
+                     .build(build_ctx, input_, weights_.conv_in);
         for (int64_t level = 0; level < 3; ++level) {
             const auto & stage = weights_.down[static_cast<size_t>(level)];
             for (const auto & block : stage.blocks) {
-                x = run_block(build_ctx, x, block);
+                x = modules::PixelNormCausalConv2dResBlockModule(block.config).build(build_ctx, x, block.block);
             }
             if (stage.downsample.has_value()) {
                 x = run_downsample(build_ctx, x, *stage.downsample, stage.channels);
             }
         }
-        x = run_block(build_ctx, x, weights_.mid_block_1);
-        x = run_block(build_ctx, x, weights_.mid_block_2);
-        x = pixel_norm(build_ctx, x);
+        x = modules::PixelNormCausalConv2dResBlockModule(weights_.mid_block_1.config)
+                .build(build_ctx, x, weights_.mid_block_1.block);
+        x = modules::PixelNormCausalConv2dResBlockModule(weights_.mid_block_2.config)
+                .build(build_ctx, x, weights_.mid_block_2.block);
+        x = modules::PixelNormModule({1, kPixelNormEps}).build(build_ctx, x);
         x = modules::SiluModule{}.build(build_ctx, x);
-        x = causal_conv2d(build_ctx, x, weights_.conv_out, config.ch * 4, config.latent_channels * 2, 3);
+        x = modules::SameWidthCausalConv2dModule({config.ch * 4, config.latent_channels * 2, 3, true})
+                .build(build_ctx, x, weights_.conv_out);
         x = modules::SliceModule({1, 0, config.latent_channels}).build(build_ctx, x);
         x = modules::SliceModule({2, 0, latent_frames_}).build(build_ctx, x);
         x = modules::SliceModule({3, 0, config.latent_mel_bins}).build(build_ctx, x);
@@ -757,6 +711,11 @@ DramaBoxEncodedReferenceLatents DramaBoxAudioVaeEncoderRuntime::encode(
     int64_t mel_frames) const {
     prepare(batch, mel_frames);
     return graph_->encode(mel, batch, mel_frames);
+}
+
+void DramaBoxAudioVaeEncoderRuntime::release_runtime_state() const {
+    graph_.reset();
+    weights_.reset();
 }
 
 }  // namespace engine::models::dramabox

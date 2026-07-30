@@ -4,6 +4,8 @@
 |---|---|---|---|
 | Qwen3 TTS | `qwen3_tts` | `tts`, `vdes` | [Qwen3 TTS](#qwen3-tts) |
 | Chatterbox | `chatterbox` | `clon`, `vc` | [Chatterbox](#chatterbox) |
+| Confucius4-TTS | `confucius4_tts` | `clon` | [Confucius4-TTS](#confucius4-tts) |
+| DramaBox | `dramabox` | `tts`, `clon` | [DramaBox](#dramabox) |
 | MioTTS | `miotts` | `tts` | [MioTTS](#miotts) |
 | MOSS-TTS-Local | `moss_tts_local` | `tts`, `clon` | [MOSS-TTS-Local](#moss-tts-local) |
 | MOSS-TTS-Nano | `moss_tts_nano` | `tts`, `clon` | [MOSS-TTS-Nano](#moss-tts-nano) |
@@ -15,7 +17,7 @@
 | IndexTTS2 | `index_tts2` | `tts` | [IndexTTS2](#indextts2) |
 | Irodori-TTS | `irodori_tts` | `tts`, `vdes` | [Irodori-TTS](#irodori-tts) |
 | GLM-TTS | `glm_tts` | `tts`, `clon` | [GLM-TTS](#glm-tts) |
-| Inflect Micro/Nano v2 | `inflect_v2` | `tts` | [Inflect v2](#inflect-v2) |
+| Inflect Micro v2 | `inflect_v2` | `tts` | [Inflect v2](#inflect-v2) |
 | OuteTTS | `outetts` | `tts`, `clon` | [OuteTTS](#outetts) |
 | Supertonic | `supertonic` | `tts` | [Supertonic](#supertonic) |
 | VibeVoice | `vibevoice` | `tts` | [VibeVoice](#vibevoice) |
@@ -86,6 +88,100 @@ audiocpp_cli --task vc --family chatterbox --model models/chatterbox --backend c
 | `--repetition-penalty` | float | `2.0` | T3 repetition penalty. |
 | `--max-tokens` | integer | `1000` | Maximum generated T3 tokens per chunk. |
 | `--do-sample` | `true`, `false` | `true` | Enable stochastic T3 sampling. |
+
+## Confucius4-TTS
+
+Confucius4-TTS is an experimental multilingual voice-cloning TTS model packaged as a standalone GGUF bundle. It supports offline generation and streaming text input, using reference speech, language-aware text normalization, T2S semantic generation, S2A flow matching, style encoding, semantic audio features, and BigVGAN vocoding.
+
+| Field | Value |
+|---|---|
+| Family | `confucius4_tts` |
+| GGUF model | `models/Confucius4-TTS-GGUF/confucius4-tts-orig.gguf` |
+| Task | `clon` |
+| Modes | `offline`, `streaming` |
+| Languages | `zh`, `en`, `ja`, `ko`, `de`, `fr`, `es`, `id`, `it`, `th`, `pt`, `ru`, `ms`, `vi` |
+| Voice input | Required reference WAV through `--voice-ref` |
+| Built-in voices | Not exposed |
+| Status | Experimental |
+
+Language support note: English (`en`) and Chinese (`zh`) are the currently validated and normalized paths. Other advertised language codes are experimental best-effort cross-language cloning paths; text frontend normalization is incomplete for them, so pronunciation and reading quality may vary.
+
+Voice clone:
+
+```bash
+audiocpp_cli --task clon --family confucius4_tts --model models/Confucius4-TTS-GGUF/confucius4-tts-orig.gguf --backend cuda --language en --text "Hello from Confucius four TTS." --voice-ref assets/resources/b.wav --out out.wav
+```
+
+Streaming session:
+
+```bash
+audiocpp_cli --task clon --family confucius4_tts --model models/Confucius4-TTS-GGUF/confucius4-tts-orig.gguf --backend cuda --mode streaming --language en --text "Hello from the streaming path." --voice-ref assets/resources/b.wav --out out.wav
+```
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `--voice-ref` | WAV path | required | Reference speaker audio for cloning. |
+| `--language` | language code | `zh` | Target synthesis language code. |
+| `--temperature` | float | `0.8` | T2S sampling temperature. |
+| `--top-p` | float | `0.8` | T2S nucleus sampling probability. |
+| `--top-k` | integer | `30` | T2S top-k sampling limit. |
+| `--num-beams` | integer | `3` | T2S beam count; use `1` for single-beam sampling. |
+| `--repetition-penalty` | float | `10.0` | T2S repetition penalty. |
+| `--max-tokens` | integer | `1520` | Maximum T2S semantic sequence length including prompt tokens. |
+| `--num-inference-steps` | integer | `25` | S2A flow-matching step count. |
+| `--guidance-scale` | float | `0.7` | S2A classifier-free guidance scale. |
+| `--text-chunk-size` | integer tokens | `80` | Maximum text tokens per generated segment. |
+| `--text-chunk-mode` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework text chunking mode. |
+| `--request-option cross_fade_duration_sec=<seconds>` | seconds | `0.3` | Cross-fade duration between generated segments. |
+| `--request-option edge_fade_duration_sec=<seconds>` | seconds | `0.1` | Fade duration applied at segment edges. |
+| `--request-option edge_pad_duration_sec=<seconds>` | seconds | `0.1` | Silence padding applied at segment edges. |
+| `--seed` | integer | `1234` | Seed for T2S sampling and S2A noise initialization. |
+| `--session-option confucius4_tts.mem_saver=true|false` | bool | `false` | Release staged graphs after request phases; default keeps them cached for reuse. |
+
+## DramaBox
+
+DramaBox is an experimental English expressive TTS and voice-cloning model packaged as a standalone GGUF bundle. It combines Gemma text conditioning, diffusion sampling, reference-audio conditioning, long-form chunking, and 48 kHz stereo output.
+
+| Field | Value |
+|---|---|
+| Family | `dramabox` |
+| GGUF model | `models/DramaBox-GGUF/dramabox-q8_0.gguf` |
+| Tasks | `tts`, `clon` |
+| Modes | `offline` |
+| Languages | `en` |
+| Voice input | Optional reference WAV through `--voice-ref` |
+| Built-in voices | Not exposed |
+| Status | Experimental |
+
+Text-only speech:
+
+```bash
+audiocpp_cli --task tts --family dramabox --model models/DramaBox-GGUF/dramabox-q8_0.gguf --backend cuda --text "Hello from DramaBox." --out out.wav
+```
+
+Voice clone:
+
+```bash
+audiocpp_cli --task clon --family dramabox --model models/DramaBox-GGUF/dramabox-q8_0.gguf --backend cuda --text "Hello from DramaBox." --voice-ref assets/resources/b.wav --out out.wav
+```
+
+| Option | Values | Default | Meaning |
+|---|---|---:|---|
+| `--voice-ref` / `--target-voice` | WAV path | not set | Reference voice for cloning; omitted requests text-only speech. |
+| `--request-option negative_prompt=<text>` | string | built-in quality prompt | Negative text conditioning when classifier-free guidance is enabled. |
+| `--request-option duration_sec=<seconds>` | seconds | `0` | Explicit target duration; `0` uses prompt-duration estimation. |
+| `--num-inference-steps` | integer | `30` | Diffusion sampling steps. |
+| `--guidance-scale` | float | `2.5` | Classifier-free guidance scale. Values greater than `1` enable CFG. |
+| `--request-option spatio_temporal_guidance_scale=<float>` | float | `1.5` | Spatio-temporal guidance scale. Values greater than `0` enable STG. |
+| `--request-option duration_scale=<float>` | float | `1.1` | Multiplier applied to the estimated prompt duration when `duration_sec` is `0`. |
+| `--request-option reference_duration_sec=<seconds>` | seconds | `10.0` | Reference voice crop/repeat duration. |
+| `--request-option guidance_rescale=auto|<number>` | string | `auto` | Guidance rescale mode or explicit numeric value. |
+| `--request-option audio_chunk_threshold_sec=<seconds>` | seconds | `45.0` | Estimated duration threshold that switches to long-form chunking. |
+| `--request-option audio_chunk_duration_sec=<seconds>` | seconds | `37.0` | Target estimated duration for each long-form chunk. |
+| `--request-option cross_fade_duration_sec=<seconds>` | seconds | `0.05` | Equal-power cross-fade between long-form chunks. |
+| `--seed` | integer | `42` | Torch-compatible CUDA noise seed for diffusion sampling. |
+| `--session-option dramabox.perf_mode=off|flash_attention` | enum | `off` | Attention implementation mode. `off` keeps the exact reference-query attention path; `flash_attention` enables the optimized path. |
+| `--session-option dramabox.mem_saver=true|false` | bool | `false` | Release staged runtime graphs and weights immediately after each request phase to reduce peak and resident VRAM; default keeps components cached for reuse. |
 
 ## MioTTS
 
@@ -562,14 +658,16 @@ standalone GGUF packaging, controls, and validation results.
 
 ## Inflect v2
 
-Inflect Micro v2 and Nano v2 are compact English offline TTS models with a
-shared native GGML runtime. They require an external eSpeak-ng installation:
+Inflect Micro v2 is a compact English offline TTS model with a native GGML
+runtime. The model manager defaults to the standalone GGUF package; the
+original source/conversion path remains documented in the community guide.
+Inflect requires an external eSpeak-ng installation:
 
 ```bash
-uv run --with onnx --with safetensors python tools/model_manager.py install inflect_micro_v2 --models-root models
+python3 tools/model_manager.py install inflect_micro_v2_orig --models-root models
 
 audiocpp_cli --task tts --family inflect_v2 \
-  --model models/Inflect-Micro-v2 --backend cpu \
+  --model models/Inflect-Micro-v2-GGUF/inflect-micro-v2-orig.gguf --backend cuda \
   --text "Hello from Inflect Micro version two." \
   --request-option speaking_rate=1.0 \
   --request-option variation=0.667 \
@@ -577,7 +675,8 @@ audiocpp_cli --task tts --family inflect_v2 \
 ```
 
 See the [Inflect v2 community model guide](community_models/inflect_v2.md) for
-Nano installation, eSpeak-ng paths, long-form behavior, and limitations.
+eSpeak-ng paths, long-form behavior, source/conversion instructions, and
+limitations.
 
 ## Supertonic
 

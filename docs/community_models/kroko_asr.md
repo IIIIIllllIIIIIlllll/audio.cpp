@@ -1,5 +1,8 @@
 # Kroko Community ASR
 
+Default model-manager downloads use the published GGUF package when available;
+the original source/conversion instructions below remain valid for manual use.
+
 `kroko_asr` is a native audio.cpp port of the free Kroko Community
 Zipformer2/RNN-T models. The Kaldi-compatible filterbank, streaming
 Conv2dSubsampling/ConvNeXt encoder, 19-layer Zipformer2, stateless predictor,

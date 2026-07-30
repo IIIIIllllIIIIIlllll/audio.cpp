@@ -90,6 +90,7 @@ public:
 
     void prepare(int64_t batch) const;
     DramaBoxConditioningEncoding encode(const DramaBoxPromptEncoding & prompt) const;
+    void release_runtime_state() const;
 
 private:
     class Graph;

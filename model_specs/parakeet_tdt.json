@@ -185,32 +185,42 @@
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",
-      "repo": "nvidia/parakeet-tdt-0.6b-v3",
+      "repo": "audio-cpp/audio.cpp-gguf",
       "revision": "main",
       "gated": false
     }
   },
   "packages": [
     {
-      "id": "parakeet_tdt",
-      "display_name": "Parakeet-TDT 0.6B v3 Safetensors",
+      "id": "parakeet_tdt_q8_0",
+      "display_name": "Parakeet-TDT 0.6B v3 Q8_0 GGUF",
       "default": true,
-      "format": "safetensors",
-      "precision": "native",
-      "target_directory": "parakeet-tdt-0.6b-v3",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "Parakeet-TDT-0.6B-v3-GGUF",
       "files": [
-        "config.json",
-        "processor_config.json",
-        "tokenizer.json",
-        "model.safetensors"
-      ]
+        "Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf"
+      ],
+      "strip_prefix": "Parakeet-TDT-0.6B-v3-GGUF"
+    },
+    {
+      "id": "parakeet_tdt_f16",
+      "display_name": "Parakeet-TDT 0.6B v3 F16 GGUF",
+      "format": "gguf",
+      "precision": "f16",
+      "target_directory": "Parakeet-TDT-0.6B-v3-GGUF",
+      "files": [
+        "Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-f16.gguf"
+      ],
+      "strip_prefix": "Parakeet-TDT-0.6B-v3-GGUF"
     }
   ],
   "dependencies": [],
   "ui": {
-    "recommended_package": "parakeet_tdt",
+    "recommended_package": "parakeet_tdt_q8_0",
     "tags": [
-      "ASR"
+      "ASR",
+      "GGUF"
     ],
     "docs": [
       "docs/community_models/parakeet_tdt.md"

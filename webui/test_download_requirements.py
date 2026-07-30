@@ -50,7 +50,7 @@ class _AppPatch(unittest.TestCase):
 class RequirementsNoteTests(_AppPatch):
     def setUp(self):
         self.entry = {"id": "vevo2", "label": "Vevo2", "family": "vevo2",
-                      "download_id": "vevo2_gguf", "abs_path": "/nonexistent",
+                      "download_id": "vevo2_q8_0", "abs_path": "/nonexistent",
                       "installed": False, "incomplete": False, "missing_files": [],
                       "min_vram_gb": 6}
         self.stub_size(3 * GB)
@@ -79,7 +79,7 @@ class RequirementsNoteTests(_AppPatch):
         self.assertIn("Vevo2", blocker)
 
     def test_an_unknown_size_is_not_treated_as_zero(self):
-        # Converter installs and unreachable repos report None; that must never look
+        # Unreachable repos report None; that must never look
         # like "0 bytes needed, definitely fits" nor block the download.
         self.stub_size(None)
         self.stub_disk(0)
@@ -108,7 +108,7 @@ class DiskAlarmTests(_AppPatch):
     """Low remaining space after a download is still offered, but loudly."""
 
     def setUp(self):
-        self.entry = {"id": "m", "label": "M", "family": "vevo2", "download_id": "pkg",
+        self.entry = {"id": "m", "label": "M", "family": "vevo2", "download_id": "vevo2_q8_0",
                       "abs_path": "/nonexistent", "installed": False, "incomplete": False,
                       "missing_files": []}
         self.stub_size(10 * GB)
@@ -142,7 +142,7 @@ class MemoryAlarmTests(_AppPatch):
     """Above MEMORY_USAGE_ALARM of the device it will run on, the model is flagged."""
 
     def setUp(self):
-        self.entry = {"id": "m", "label": "M", "family": "vevo2", "download_id": "pkg",
+        self.entry = {"id": "m", "label": "M", "family": "vevo2", "download_id": "vevo2_q8_0",
                       "abs_path": "/nonexistent", "installed": False, "incomplete": False,
                       "missing_files": [], "min_vram_gb": 7}
         self.stub_size(1 * GB)
@@ -191,7 +191,7 @@ class MemoryAlarmTests(_AppPatch):
 class BlockedDownloadDoesNotStartTests(_AppPatch):
     def test_download_model_refuses_and_spawns_nothing(self):
         entry = {"id": "vevo2", "label": "Vevo2", "family": "vevo2",
-                 "download_id": "vevo2_gguf", "abs_path": "/nonexistent",
+                 "download_id": "vevo2_q8_0", "abs_path": "/nonexistent",
                  "installed": False, "incomplete": False, "missing_files": [],
                  "min_vram_gb": 6}
         self.patch(catalog_by_id=lambda model_id: entry)
@@ -215,8 +215,9 @@ class WarningsSurviveTheProgressRefreshTests(_AppPatch):
 
     def setUp(self):
         self.entry = {"id": "m", "label": "Big Model", "family": "vevo2", "path": "models/M",
-                      "download_id": "pkg", "abs_path": "/nonexistent", "installed": False,
-                      "incomplete": False, "missing_files": [], "min_vram_gb": 20}
+                      "download_id": "vevo2_q8_0", "abs_path": "/nonexistent", "installed": False,
+                      "download_installed": False, "incomplete": False, "missing_files": [],
+                      "min_vram_gb": 20}
         self.stub_size(17 * GB)
         self.stub_disk(50 * GB)
         self.patch(BACKEND="gpu", LOCAL_VRAM_GB=8.0,
@@ -268,13 +269,13 @@ class ConfirmBeforeDownloadTests(_AppPatch):
 
     def setUp(self):
         self.entry = {"id": "m", "label": "Big Model", "family": "vevo2", "path": "models/M",
-                      "download_id": "pkg", "abs_path": "/nonexistent", "installed": False,
+                      "download_id": "vevo2_q8_0", "abs_path": "/nonexistent", "installed": False,
                       "incomplete": False, "missing_files": [], "min_vram_gb": 20}
         self.stub_size(17 * GB)
         self.stub_disk(50 * GB)
         self.patch(BACKEND="gpu", LOCAL_VRAM_GB=8.0,
                    catalog_by_id=lambda model_id: self.entry,
-                   MODEL_MANAGER="/path/to/model_manager.py")
+                   SPEC_MODEL_MANAGER="/path/to/model_manager_webui.py")
         self.spawned = []
         self.addCleanup(setattr, app.subprocess, "Popen", app.subprocess.Popen)
 
@@ -325,10 +326,15 @@ class ConfirmBeforeDownloadTests(_AppPatch):
         self.assertIn("Not enough disk space", message)
         self.assertFalse(can_confirm, "a download that cannot fit offered a Confirm")
 
-    def test_nothing_to_confirm_when_already_installed(self):
-        self.entry["installed"] = True
+    def test_nothing_to_confirm_when_download_package_is_already_installed(self):
+        self.entry.update(installed=True, download_installed=True)
         _message, can_confirm = app.download_proposal("m")
         self.assertFalse(can_confirm)
+
+    def test_existing_legacy_install_can_still_download_the_gguf_package(self):
+        self.entry.update(installed=True, download_installed=False)
+        _message, can_confirm = app.download_proposal("m")
+        self.assertTrue(can_confirm)
 
     def test_nothing_to_confirm_without_a_selection(self):
         _message, can_confirm = app.download_proposal("")
@@ -355,31 +361,59 @@ class ConfirmBeforeDownloadTests(_AppPatch):
 
 
 class SizeProbeTests(unittest.TestCase):
-    def _stub_listing(self, listing):
-        mm = app._model_manager_module()
-        if mm is None:
-            self.skipTest("tools/model_manager.py is not importable")
-        original = mm.list_hf_files
-        mm.list_hf_files = listing
-        self.addCleanup(setattr, mm, "list_hf_files", original)
-        app._dl_size_cache.pop("chatterbox", None)
-        self.addCleanup(app._dl_size_cache.pop, "chatterbox", None)
+    def _stub_spec_package(self, files):
+        original = app.SPEC_PACKAGE_BY_ID
+        app.SPEC_PACKAGE_BY_ID = {
+            **app.SPEC_PACKAGE_BY_ID,
+            "pkg": {
+                "download": {"kind": "huggingface_snapshot", "repo": "audio-cpp/audio.cpp-gguf"},
+                "files": files,
+            },
+        }
+        self.addCleanup(setattr, app, "SPEC_PACKAGE_BY_ID", original)
+        app._dl_size_cache.pop("pkg", None)
+        self.addCleanup(app._dl_size_cache.pop, "pkg", None)
+
+    def _stub_head_lengths(self, lengths):
+        calls = []
+        original = app.requests.head
+
+        class _Response:
+            def __init__(self, length):
+                self.headers = {} if length is None else {"Content-Length": str(length)}
+
+            def raise_for_status(self):
+                pass
+
+        def fake_head(*args, **kwargs):
+            index = len(calls)
+            calls.append(args)
+            return _Response(lengths[index])
+
+        app.requests.head = fake_head
+        self.addCleanup(setattr, app.requests, "head", original)
+        return calls
 
     def test_sizes_are_summed_over_every_snapshot_source(self):
-        self._stub_listing(lambda source: [("a", "a", 1000), ("b", "b", 2000)])
-        # chatterbox is a single SnapshotSource, so exactly one listing is summed.
-        self.assertEqual(app.package_download_bytes("chatterbox"), 3000)
+        self._stub_spec_package(("a.gguf", "b.gguf"))
+        self._stub_head_lengths((1000, 2000))
+        self.assertEqual(app.package_download_bytes("pkg"), 3000)
 
     def test_a_listing_without_sizes_reports_unknown(self):
-        self._stub_listing(lambda source: [("a", "a", 1000), ("b", "b", None)])
-        self.assertIsNone(app.package_download_bytes("chatterbox"))
+        self._stub_spec_package(("a.gguf", "b.gguf"))
+        self._stub_head_lengths((1000, None))
+        self.assertIsNone(app.package_download_bytes("pkg"))
 
     def test_an_unreachable_repo_reports_unknown(self):
-        def boom(source):
+        self._stub_spec_package(("a.gguf",))
+        original = app.requests.head
+
+        def boom(*args, **kwargs):
             raise OSError("network is unreachable")
 
-        self._stub_listing(boom)
-        self.assertIsNone(app.package_download_bytes("chatterbox"))
+        app.requests.head = boom
+        self.addCleanup(setattr, app.requests, "head", original)
+        self.assertIsNone(app.package_download_bytes("pkg"))
 
     def test_packages_without_a_download_id_report_unknown(self):
         self.assertIsNone(app.package_download_bytes(None))

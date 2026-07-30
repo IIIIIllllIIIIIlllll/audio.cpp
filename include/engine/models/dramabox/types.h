@@ -116,7 +116,6 @@ struct DramaBoxRequest {
     float duration_sec = 0.0F;
     float reference_duration_sec = 10.0F;
     float guidance_rescale = -1.0F;
-    bool denoise_ref = false;
     float audio_chunk_threshold_sec = 45.0F;
     float audio_chunk_duration_sec = 37.0F;
     float cross_fade_duration_sec = 0.05F;

@@ -449,37 +449,6 @@ void append_reference_latents(
     state.tokens = total_tokens;
 }
 
-void fill_token_timestep_features(
-    const DramaBoxLatentState & state,
-    float scaled_sigma,
-    const std::vector<float> & sigma_features,
-    const std::vector<float> & zero_features,
-    std::vector<float> & features) {
-    constexpr int64_t kFeatureSize = 256;
-    if (static_cast<int64_t>(sigma_features.size()) != kFeatureSize ||
-        static_cast<int64_t>(zero_features.size()) != kFeatureSize) {
-        throw std::runtime_error("DramaBox timestep feature row shape mismatch");
-    }
-    features.resize(static_cast<size_t>(state.tokens * kFeatureSize));
-    const int64_t half = kFeatureSize / 2;
-    for (int64_t token = 0; token < state.tokens; ++token) {
-        const float mask = state.denoise_mask[static_cast<size_t>(token * 128)];
-        float * dst = features.data() + static_cast<std::ptrdiff_t>(token * kFeatureSize);
-        if (mask == 0.0F || mask == 1.0F) {
-            const float * src = mask == 0.0F ? zero_features.data() : sigma_features.data();
-            std::copy_n(src, static_cast<size_t>(kFeatureSize), dst);
-            continue;
-        }
-        const float timestep = scaled_sigma * mask;
-        for (int64_t i = 0; i < half; ++i) {
-            const double exponent = -std::log(10000.0) * static_cast<double>(i) / static_cast<double>(half);
-            const double value = static_cast<double>(timestep) * std::exp(exponent);
-            dst[static_cast<size_t>(i)] = static_cast<float>(std::cos(value));
-            dst[static_cast<size_t>(half + i)] = static_cast<float>(std::sin(value));
-        }
-    }
-}
-
 void guided_prediction_from_velocity(
     const std::vector<float> & velocity,
     const DramaBoxLatentState & state,

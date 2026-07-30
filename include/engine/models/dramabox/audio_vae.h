@@ -19,11 +19,8 @@ class ExecutionContext;
 namespace engine::models::dramabox {
 
 struct DramaBoxVaeResnetBlockWeights {
-    modules::Conv2dWeights conv1;
-    modules::Conv2dWeights conv2;
-    std::optional<modules::Conv2dWeights> shortcut;
-    int64_t in_channels = 0;
-    int64_t out_channels = 0;
+    modules::PixelNormCausalConv2dResBlockConfig config;
+    modules::PixelNormCausalConv2dResBlockWeights block;
 };
 
 struct DramaBoxVaeUpStageWeights {
@@ -109,6 +106,7 @@ public:
     void prepare(int64_t batch, int64_t latent_frames) const;
     DramaBoxDecodedMel decode(const std::vector<float> & patch_latents, int64_t batch, int64_t latent_frames) const;
     DramaBoxDecodedMel decode_to_device(const std::vector<float> & patch_latents, int64_t batch, int64_t latent_frames) const;
+    void release_runtime_state() const;
 
 private:
     class Graph;
@@ -133,6 +131,7 @@ public:
 
     void prepare(int64_t batch, int64_t mel_frames) const;
     DramaBoxEncodedReferenceLatents encode(const std::vector<float> & mel, int64_t batch, int64_t mel_frames) const;
+    void release_runtime_state() const;
 
 private:
     class Graph;

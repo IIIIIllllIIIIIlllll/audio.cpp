@@ -91,18 +91,6 @@ bool mem_saver_from_options(const runtime::SessionOptions & options) {
     return false;
 }
 
-void validate_session_option_keys(
-    const runtime::SessionOptions & options,
-    const engine::model_spec::ModelContract & contract) {
-    const std::string family_prefix = std::string(kFamily) + ".";
-    for (const auto & [key, _] : options.options) {
-        if (key.rfind(family_prefix, 0) == 0 &&
-            contract.session_option_keys.find(key) == contract.session_option_keys.end()) {
-            throw std::runtime_error("unknown Confucius4-TTS session option: " + key);
-        }
-    }
-}
-
 runtime::AudioBuffer merge_confucius_audio_chunks(
     const std::vector<runtime::AudioBuffer> & chunks,
     float cross_fade_duration_sec) {
@@ -161,7 +149,7 @@ ConfuciusSession::ConfuciusSession(
       contract_(require_contract(std::move(contract))),
       tokenizer_(assets_),
       reference_cache_(reference_cache_slots_from_options(options)) {
-    validate_session_option_keys(options, *contract_);
+    runtime::validate_spec_backed_session_options(options, *contract_, kFamily, "Confucius4-TTS");
     graph_arena_bytes_ = runtime::parse_size_mb_option(
         options.options,
         {"confucius4_tts.graph_arena_mb"},
@@ -238,6 +226,7 @@ runtime::RunMode ConfuciusSession::run_mode() const {
 }
 
 void ConfuciusSession::prepare(const runtime::SessionPreparationRequest & request) {
+    runtime::validate_spec_backed_request_options(request.options, *contract_, "Confucius4-TTS");
     const auto start = Clock::now();
     prepared_defaults_ = make_confucius_prepare_defaults(*assets_, request);
     debug::timing_log_scalar("confucius4_tts.prepare.request_parse_ms", engine::debug::elapsed_ms(start));
@@ -412,6 +401,7 @@ runtime::AudioBuffer ConfuciusSession::synthesize(
 
 runtime::TaskResult ConfuciusSession::run(const runtime::TaskRequest & request) {
     require_prepared("Confucius4-TTS run");
+    runtime::validate_spec_backed_request_options(request.options, *contract_, "Confucius4-TTS");
     if (task_.mode != runtime::RunMode::Offline) {
         throw std::runtime_error("Confucius4-TTS run requires an offline session");
     }
@@ -440,6 +430,7 @@ runtime::StreamingPolicy ConfuciusSession::streaming_policy() const {
 
 void ConfuciusSession::start_stream(const runtime::TaskRequest & request) {
     require_prepared("Confucius4-TTS streaming");
+    runtime::validate_spec_backed_request_options(request.options, *contract_, "Confucius4-TTS");
     if (task_.mode != runtime::RunMode::Streaming) {
         throw std::runtime_error("Confucius4-TTS start_stream requires a streaming session");
     }

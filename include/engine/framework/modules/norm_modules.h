@@ -92,6 +92,33 @@ private:
     PixelNormConfig config_;
 };
 
+struct BiasNormConfig {
+    int64_t hidden_size = 0;
+};
+
+struct BiasNormWeights {
+    core::TensorValue bias;
+    float log_scale = 0.0f;
+};
+
+class BiasNormModule {
+public:
+    explicit BiasNormModule(BiasNormConfig config);
+
+    const core::ModuleSchema & schema() const noexcept;
+    const BiasNormConfig & config() const noexcept;
+
+    core::TensorValue build(
+        core::ModuleBuildContext & ctx,
+        const core::TensorValue & input,
+        const BiasNormWeights & weights) const;
+
+    static const core::ModuleSchema & static_schema() noexcept;
+
+private:
+    BiasNormConfig config_;
+};
+
 struct AdaptiveInstanceNorm1dConfig {
     int64_t hidden_size = 0;
     float eps = 1e-5f;

@@ -3,6 +3,7 @@
 #include "engine/framework/audio/conversion.h"
 #include "engine/framework/audio/resampling.h"
 #include "engine/framework/audio/waveform_ops.h"
+#include "engine/framework/debug/profiler.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/sampling/torch_random.h"
 #include "engine/models/rvc/hubert.h"
@@ -12,6 +13,7 @@
 #include "retrieval_index.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -123,77 +125,104 @@ float squared_l2(const float * lhs, const float * rhs, int64_t dim) {
 }
 
 void apply_retrieval_blend(
+    const std::vector<float> & source_features,
     std::vector<float> & features,
     int64_t frames,
     int64_t dim,
     const RvcRetrievalIndex & index,
-    float retrieval_blend) {
+    float retrieval_blend,
+    size_t threads) {
     if (retrieval_blend == 0.0F) {
         return;
     }
-    if (index.dim != dim || static_cast<int64_t>(features.size()) != frames * dim) {
+    if (index.dim != dim ||
+        static_cast<int64_t>(source_features.size()) != frames * dim ||
+        static_cast<int64_t>(features.size()) != frames * dim) {
         throw std::runtime_error("RVC retrieval feature shape mismatch");
     }
-    std::vector<float> blended(features.size(), 0.0F);
-    constexpr int64_t kNeighbors = 8;
-    for (int64_t frame = 0; frame < frames; ++frame) {
-        const auto * query = features.data() + static_cast<size_t>(frame * dim);
-        int64_t best_list = 0;
-        float best_centroid = std::numeric_limits<float>::infinity();
-        for (int64_t list = 0; list < index.nlist; ++list) {
-            const float dist = squared_l2(query, index.centroids.data() + static_cast<size_t>(list * dim), dim);
-            if (dist < best_centroid) {
-                best_centroid = dist;
-                best_list = list;
+    constexpr size_t kNeighbors = 8;
+    const int worker_count = static_cast<int>(
+        std::max<size_t>(
+            1,
+            std::min<size_t>(
+                {threads, static_cast<size_t>(frames), static_cast<size_t>(std::numeric_limits<int>::max())})));
+#pragma omp parallel num_threads(worker_count) if(frames >= 8)
+    {
+        std::vector<float> blended_frame(static_cast<size_t>(dim));
+        std::array<float, kNeighbors> nearest_dist {};
+        std::array<int64_t, kNeighbors> nearest_index {};
+#pragma omp for schedule(static)
+        for (int64_t frame = 0; frame < frames; ++frame) {
+            const auto * query = source_features.data() + static_cast<size_t>(frame * dim);
+            int64_t best_list = 0;
+            float best_centroid = std::numeric_limits<float>::infinity();
+            for (int64_t list = 0; list < index.nlist; ++list) {
+                const float dist = squared_l2(query, index.centroids.data() + static_cast<size_t>(list * dim), dim);
+                if (dist < best_centroid) {
+                    best_centroid = dist;
+                    best_list = list;
+                }
             }
-        }
-        const int64_t offset = index.list_offsets[static_cast<size_t>(best_list)];
-        const int64_t length = index.list_lengths[static_cast<size_t>(best_list)];
-        std::vector<std::pair<float, int64_t>> nearest;
-        nearest.reserve(static_cast<size_t>(std::min<int64_t>(kNeighbors, length)));
-        for (int64_t row = 0; row < length; ++row) {
-            const int64_t vector_index = offset + row;
-            const float dist = squared_l2(query, index.vectors.data() + static_cast<size_t>(vector_index * dim), dim);
-            if (static_cast<int64_t>(nearest.size()) < kNeighbors) {
-                nearest.emplace_back(dist, vector_index);
-                std::push_heap(nearest.begin(), nearest.end());
-            } else if (dist < nearest.front().first) {
-                std::pop_heap(nearest.begin(), nearest.end());
-                nearest.back() = {dist, vector_index};
-                std::push_heap(nearest.begin(), nearest.end());
+            const int64_t offset = index.list_offsets[static_cast<size_t>(best_list)];
+            const int64_t length = index.list_lengths[static_cast<size_t>(best_list)];
+            size_t nearest_count = 0;
+            for (int64_t row = 0; row < length; ++row) {
+                const int64_t vector_index = offset + row;
+                const float dist = squared_l2(query, index.vectors.data() + static_cast<size_t>(vector_index * dim), dim);
+                if (nearest_count < kNeighbors) {
+                    nearest_dist[nearest_count] = dist;
+                    nearest_index[nearest_count] = vector_index;
+                    ++nearest_count;
+                    continue;
+                }
+                size_t worst_slot = 0;
+                float worst_dist = nearest_dist[0];
+                for (size_t slot = 1; slot < kNeighbors; ++slot) {
+                    if (nearest_dist[slot] > worst_dist) {
+                        worst_dist = nearest_dist[slot];
+                        worst_slot = slot;
+                    }
+                }
+                if (dist < worst_dist) {
+                    nearest_dist[worst_slot] = dist;
+                    nearest_index[worst_slot] = vector_index;
+                }
             }
-        }
-        auto * dst = blended.data() + static_cast<size_t>(frame * dim);
-        if (nearest.empty()) {
-            throw std::runtime_error("RVC retrieval selected an empty IVF list");
-        }
-        float weight_sum = 0.0F;
-        for (const auto & item : nearest) {
-            if (item.first <= 0.0F) {
-                std::copy(
-                    index.vectors.data() + static_cast<size_t>(item.second * dim),
-                    index.vectors.data() + static_cast<size_t>((item.second + 1) * dim),
-                    dst);
-                weight_sum = -1.0F;
-                break;
+            if (nearest_count == 0) {
+                throw std::runtime_error("RVC retrieval selected an empty IVF list");
             }
-            const float inv = 1.0F / item.first;
-            const float weight = inv * inv;
-            weight_sum += weight;
-            const auto * src = index.vectors.data() + static_cast<size_t>(item.second * dim);
+            std::fill(blended_frame.begin(), blended_frame.end(), 0.0F);
+            float weight_sum = 0.0F;
+            for (size_t slot = 0; slot < nearest_count; ++slot) {
+                const float dist = nearest_dist[slot];
+                const int64_t vector_index = nearest_index[slot];
+                if (dist <= 0.0F) {
+                    std::copy(
+                        index.vectors.data() + static_cast<size_t>(vector_index * dim),
+                        index.vectors.data() + static_cast<size_t>((vector_index + 1) * dim),
+                        blended_frame.data());
+                    weight_sum = -1.0F;
+                    break;
+                }
+                const float inv = 1.0F / dist;
+                const float weight = inv * inv;
+                weight_sum += weight;
+                const auto * src = index.vectors.data() + static_cast<size_t>(vector_index * dim);
+                for (int64_t i = 0; i < dim; ++i) {
+                    blended_frame[static_cast<size_t>(i)] += src[i] * weight;
+                }
+            }
+            if (weight_sum > 0.0F) {
+                for (int64_t i = 0; i < dim; ++i) {
+                    blended_frame[static_cast<size_t>(i)] /= weight_sum;
+                }
+            }
+            auto * feature = features.data() + static_cast<size_t>(frame * dim);
             for (int64_t i = 0; i < dim; ++i) {
-                dst[i] += src[i] * weight;
+                feature[i] =
+                    blended_frame[static_cast<size_t>(i)] * retrieval_blend +
+                    source_features[static_cast<size_t>(frame * dim + i)] * (1.0F - retrieval_blend);
             }
-        }
-        if (weight_sum > 0.0F) {
-            for (int64_t i = 0; i < dim; ++i) {
-                dst[i] /= weight_sum;
-            }
-        }
-        auto * feature = features.data() + static_cast<size_t>(frame * dim);
-        for (int64_t i = 0; i < dim; ++i) {
-            feature[i] =
-                blended[static_cast<size_t>(frame * dim + i)] * retrieval_blend + feature[i] * (1.0F - retrieval_blend);
         }
     }
 }
@@ -693,7 +722,16 @@ runtime::AudioBuffer RvcNativePipeline::infer(
             content.values);
         auto original_content = content;
         if (retrieval != nullptr) {
-            apply_retrieval_blend(content.values, content.frames, content.dim, *retrieval, config.retrieval_blend);
+            const auto retrieval_start = std::chrono::steady_clock::now();
+            apply_retrieval_blend(
+                original_content.values,
+                content.values,
+                content.frames,
+                content.dim,
+                *retrieval,
+                config.retrieval_blend,
+                threads);
+            engine::debug::timing_log_scalar("rvc.retrieval_blend_ms", engine::debug::elapsed_ms(retrieval_start));
         }
         const RvcHubertFeatures * protect_source =
             (voice.has_f0 && synth_config.unvoiced_protection < 0.5F) ? &original_content : nullptr;

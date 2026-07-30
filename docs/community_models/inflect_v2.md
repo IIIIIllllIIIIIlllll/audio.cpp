@@ -1,5 +1,8 @@
 # Inflect Micro v2 and Nano v2
 
+Default model-manager downloads use the published GGUF package when available;
+the original source/conversion instructions below remain valid for manual use.
+
 `inflect_v2` provides native GGML inference for the English
 [Inflect Micro v2](https://huggingface.co/owensong/Inflect-Micro-v2) and
 [Inflect Nano v2](https://huggingface.co/owensong/Inflect-Nano-v2) TTS models.

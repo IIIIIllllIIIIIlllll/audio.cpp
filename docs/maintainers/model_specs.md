@@ -8,6 +8,24 @@ The only accepted spec shapes are the current source-layout specs already used
 by production models, and the typed schema shown here for new metadata/catalog
 work.
 
+## Migration Trees
+
+`model_specs/*.json` is the authoritative runtime tree. Specs with
+`schema_version: 1` in this directory are active typed specs and participate in
+`model_contract()` validation, embedded GGUF metadata, CLI/server inspection,
+and package discovery.
+
+`model_specs_v1/*.json` is a migration reference tree only. It records the
+expected typed shape for families that have not moved to the v1 runtime contract
+yet. Do not treat it as an active runtime source, and do not assume changes there
+affect loaders, CLI options, server validation, or package installs until the
+family is migrated into `model_specs/` with `schema_version: 1`.
+
+During migration, keep public option keys aligned with the code path that will
+actually consume them. If a live loader still accepts an older public key, either
+migrate the runtime to the normalized key in the same change or keep the legacy
+key out of the active spec until cutover. Avoid creating UI-only aliases.
+
 ## Typed Schema
 
 Top-level fields:
@@ -155,6 +173,9 @@ Required dependencies are unconditional. Optional dependencies must declare
 typed `required_when` rows. Each row is a condition over a public option key.
 Common request keys such as `return_timestamps` stay unprefixed; model-specific
 keys stay namespaced. The dependency is needed when any row matches.
+`dependencies[].option` must name a declared option in the dependency `scope`,
+and every `required_when[].option_key` must refer to a declared public option in
+the referenced scope. Multiple `required_when` rows use OR semantics.
 
 ```json
 {

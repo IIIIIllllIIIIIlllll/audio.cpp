@@ -70,7 +70,6 @@ struct DramaBoxDitInputs {
     bool stg_enabled = false;
     int64_t ref_tokens = 0;
     const std::vector<float> * latent = nullptr;
-    const std::vector<float> * timestep_features = nullptr;
     const std::vector<float> * sigma_features = nullptr;
 };
 
@@ -102,8 +101,10 @@ public:
         int64_t ref_tokens,
         const DramaBoxConditioningEncoding & conditioning,
         const std::vector<float> & rope_cos,
-        const std::vector<float> & rope_sin) const;
+        const std::vector<float> & rope_sin,
+        const std::vector<float> & timestep_mask) const;
     std::vector<float> forward(const DramaBoxDitInputs & inputs) const;
+    void release_runtime_state() const;
 
 private:
     class Graph;

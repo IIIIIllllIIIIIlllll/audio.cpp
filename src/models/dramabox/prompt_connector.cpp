@@ -10,6 +10,7 @@
 #include "engine/framework/modules/positional_modules.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
+#include "engine/framework/modules/weight_binding.h"
 
 #include <ggml-alloc.h>
 
@@ -39,20 +40,7 @@ struct GgmlContextDeleter {
     }
 };
 
-modules::LinearWeights load_linear(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    assets::TensorStorageType storage_type,
-    int64_t out_features,
-    int64_t in_features) {
-    return {
-        store.load_tensor(source, prefix + ".weight", storage_type, {out_features, in_features}),
-        store.load_tensor(source, prefix + ".bias", assets::TensorStorageType::F32, {out_features}),
-    };
-}
-
-DramaBoxConnectorBlockWeights load_block(
+DramaBoxConnectorBlockWeights load_prompt_connector_block(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     const std::string & prefix,
@@ -60,23 +48,26 @@ DramaBoxConnectorBlockWeights load_block(
     const DramaBoxTransformerConfig & config) {
     const int64_t hidden = config.connector_num_attention_heads * config.connector_attention_head_dim;
     DramaBoxConnectorBlockWeights block;
-    block.attention.q = load_linear(store, source, prefix + ".attn1.to_q", storage_type, hidden, hidden);
-    block.attention.k = load_linear(store, source, prefix + ".attn1.to_k", storage_type, hidden, hidden);
-    block.attention.v = load_linear(store, source, prefix + ".attn1.to_v", storage_type, hidden, hidden);
-    block.attention.out = load_linear(store, source, prefix + ".attn1.to_out.0", storage_type, hidden, hidden);
-    block.attention.gate = load_linear(
+    block.attention.q = modules::binding::linear_from_source(store, source, prefix + ".attn1.to_q", storage_type, hidden, hidden, true);
+    block.attention.k = modules::binding::linear_from_source(store, source, prefix + ".attn1.to_k", storage_type, hidden, hidden, true);
+    block.attention.v = modules::binding::linear_from_source(store, source, prefix + ".attn1.to_v", storage_type, hidden, hidden, true);
+    block.attention.out = modules::binding::linear_from_source(store, source, prefix + ".attn1.to_out.0", storage_type, hidden, hidden, true);
+    block.attention.gate = modules::binding::linear_from_source(
         store,
         source,
         prefix + ".attn1.to_gate_logits",
         storage_type,
         config.connector_num_attention_heads,
-        hidden);
+        hidden,
+        true);
     block.attention.q_norm =
         store.load_tensor(source, prefix + ".attn1.q_norm.weight", assets::TensorStorageType::Native, {hidden});
     block.attention.k_norm =
         store.load_tensor(source, prefix + ".attn1.k_norm.weight", assets::TensorStorageType::Native, {hidden});
-    block.ff_in = load_linear(store, source, prefix + ".ff.net.0.proj", storage_type, hidden * 4, hidden);
-    block.ff_out = load_linear(store, source, prefix + ".ff.net.2", storage_type, hidden, hidden * 4);
+    block.ff_in = modules::binding::linear_from_source(
+        store, source, prefix + ".ff.net.0.proj", storage_type, hidden * 4, hidden, true);
+    block.ff_out = modules::binding::linear_from_source(
+        store, source, prefix + ".ff.net.2", storage_type, hidden, hidden * 4, true);
     return block;
 }
 
@@ -113,26 +104,6 @@ std::vector<float> make_split_rope_values(
     return out;
 }
 
-core::TensorValue apply_split_rope(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const core::TensorValue & cos,
-    const core::TensorValue & sin,
-    int64_t heads,
-    int64_t head_dim) {
-    auto x = core::reshape_tensor(
-        ctx,
-        core::ensure_backend_addressable_layout(ctx, input),
-        core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], heads, head_dim}));
-    x = modules::TransposeModule({{0, 2, 1, 3}, x.shape.rank}).build(ctx, x);
-    auto out = modules::SplitRoPEModule({head_dim}).build(ctx, x, cos, sin);
-    out = modules::TransposeModule({{0, 2, 1, 3}, out.shape.rank}).build(ctx, out);
-    return core::reshape_tensor(
-        ctx,
-        core::ensure_backend_addressable_layout(ctx, out),
-        core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], heads * head_dim}));
-}
-
 core::TensorValue attention(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input,
@@ -151,20 +122,10 @@ core::TensorValue attention(
     auto v = modules::LinearModule({hidden, hidden, true, v_precision}).build(ctx, input, weights.v);
     q = modules::RMSNormModule({hidden, kRmsNormEps, true, false}).build(ctx, q, {weights.q_norm, std::nullopt});
     k = modules::RMSNormModule({hidden, kRmsNormEps, true, false}).build(ctx, k, {weights.k_norm, std::nullopt});
-    q = apply_split_rope(ctx, q, connector_weights.rope_cos, connector_weights.rope_sin, heads, head_dim);
-    k = apply_split_rope(ctx, k, connector_weights.rope_cos, connector_weights.rope_sin, heads, head_dim);
-    auto q_heads = modules::TransposeModule({{0, 2, 1, 3}, 4}).build(
-        ctx,
-        core::reshape_tensor(
-            ctx,
-            core::ensure_backend_addressable_layout(ctx, q),
-            core::TensorShape::from_dims({q.shape.dims[0], q.shape.dims[1], heads, head_dim})));
-    auto k_heads = modules::TransposeModule({{0, 2, 1, 3}, 4}).build(
-        ctx,
-        core::reshape_tensor(
-            ctx,
-            core::ensure_backend_addressable_layout(ctx, k),
-            core::TensorShape::from_dims({k.shape.dims[0], k.shape.dims[1], heads, head_dim})));
+    auto q_heads = modules::SplitRoPEAttentionModule({heads, head_dim})
+                       .build(ctx, q, connector_weights.rope_cos, connector_weights.rope_sin);
+    auto k_heads = modules::SplitRoPEAttentionModule({heads, head_dim})
+                       .build(ctx, k, connector_weights.rope_cos, connector_weights.rope_sin);
     auto v_heads = modules::TransposeModule({{0, 2, 1, 3}, 4}).build(
         ctx,
         core::reshape_tensor(
@@ -217,20 +178,6 @@ core::TensorValue attention(
     out = core::reshape_tensor(ctx, core::ensure_backend_addressable_layout(ctx, out), input.shape);
     const ggml_prec out_precision = ggml_is_quantized(weights.out.weight.type) ? GGML_PREC_DEFAULT : GGML_PREC_F32;
     return modules::LinearModule({hidden, hidden, true, out_precision}).build(ctx, out, weights.out);
-}
-
-core::TensorValue feed_forward(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const DramaBoxConnectorBlockWeights & weights,
-    const DramaBoxTransformerConfig & config) {
-    const int64_t hidden = config.connector_num_attention_heads * config.connector_attention_head_dim;
-    return modules::FeedForwardGeluModule({hidden, hidden * 4, true}).build(ctx, input, {
-        weights.ff_in.weight,
-        weights.ff_in.bias,
-        weights.ff_out.weight,
-        weights.ff_out.bias,
-    });
 }
 
 std::vector<float> make_connector_input(
@@ -291,7 +238,7 @@ DramaBoxPromptConnectorWeights load_dramabox_prompt_connector_weights(
         {config.connector_num_learnable_registers, hidden});
     weights.blocks.reserve(static_cast<size_t>(config.connector_num_layers));
     for (int64_t i = 0; i < config.connector_num_layers; ++i) {
-        weights.blocks.push_back(load_block(
+        weights.blocks.push_back(load_prompt_connector_block(
             *weights.store,
             *assets.audio_weights,
             prefix + ".transformer_1d_blocks." + std::to_string(i),
@@ -336,7 +283,12 @@ core::TensorValue build_dramabox_prompt_connector(
         auto attn = attention(ctx, norm, block.attention, weights, config.transformer, perf_mode);
         x = modules::AddModule{}.build(ctx, x, attn);
         norm = modules::RMSNormModule({hidden, kRmsNormEps, false, false}).build(ctx, x, {});
-        auto ff = feed_forward(ctx, norm, block, config.transformer);
+        auto ff = modules::FeedForwardGeluModule({hidden, hidden * 4, true}).build(ctx, norm, {
+            block.ff_in.weight,
+            block.ff_in.bias,
+            block.ff_out.weight,
+            block.ff_out.bias,
+        });
         x = modules::AddModule{}.build(ctx, x, ff);
     }
     return modules::RMSNormModule({hidden, kRmsNormEps, false, false}).build(ctx, x, {});
@@ -582,6 +534,11 @@ void DramaBoxPromptConnectorRuntime::prepare(int64_t batch) const {
 DramaBoxConditioningEncoding DramaBoxPromptConnectorRuntime::encode(const DramaBoxPromptEncoding & prompt) const {
     prepare(prompt.batch);
     return graph_->encode(prompt);
+}
+
+void DramaBoxPromptConnectorRuntime::release_runtime_state() const {
+    graph_.reset();
+    weights_.reset();
 }
 
 }  // namespace engine::models::dramabox

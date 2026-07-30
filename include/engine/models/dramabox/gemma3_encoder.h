@@ -4,6 +4,7 @@
 #include "engine/framework/core/backend.h"
 #include "engine/framework/core/module.h"
 #include "engine/framework/modules/linear_module.h"
+#include "engine/framework/modules/transformers/gemma_decoder.h"
 #include "engine/models/dramabox/assets.h"
 #include "engine/models/dramabox/gemma_tokenizer.h"
 
@@ -20,27 +21,9 @@ class ExecutionContext;
 
 namespace engine::models::dramabox {
 
-struct DramaBoxGemma3LayerWeights {
-    core::TensorValue input_norm;
-    core::TensorValue post_attention_norm;
-    core::TensorValue pre_feedforward_norm;
-    core::TensorValue post_feedforward_norm;
-    core::TensorValue q_norm;
-    core::TensorValue k_norm;
-    modules::LinearWeights q_proj;
-    modules::LinearWeights k_proj;
-    modules::LinearWeights v_proj;
-    modules::LinearWeights o_proj;
-    modules::LinearWeights gate_proj;
-    modules::LinearWeights up_proj;
-    modules::LinearWeights down_proj;
-};
-
 struct DramaBoxGemma3PromptWeights {
     std::shared_ptr<core::BackendWeightStore> store;
-    core::TensorValue embed_tokens;
-    std::vector<DramaBoxGemma3LayerWeights> layers;
-    core::TensorValue norm;
+    modules::GemmaDecoderComponent encoder;
     std::vector<modules::LinearWeights> aggregate_layers;
     core::TensorValue aggregate_bias;
 };
@@ -85,6 +68,7 @@ public:
 
     void prepare(int64_t batch) const;
     DramaBoxPromptEncoding encode(const DramaBoxGemmaTokenBatch & tokens) const;
+    void release_runtime_state() const;
 
 private:
     class Graph;

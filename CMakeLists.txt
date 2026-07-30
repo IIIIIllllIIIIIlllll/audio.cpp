@@ -253,6 +253,7 @@ add_library(engine_core OBJECT
     src/framework/text/chinese_normalization.cpp
     src/framework/text/chunking.cpp
     src/framework/text/subtitle.cpp
+    src/framework/text/text_normalization.cpp
     src/framework/text/unicode_normalization.cpp
     src/framework/io/yaml.cpp
     src/framework/io/binary.cpp
@@ -272,12 +273,15 @@ add_library(engine_core OBJECT
     src/framework/modules/structural_modules.cpp
     src/framework/modules/asr_helpers.cpp
     src/framework/modules/conv_modules.cpp
+    src/framework/modules/zipformer_modules.cpp
     src/framework/modules/speech_encoders/whisper_embedding.cpp
     src/framework/modules/speech_encoders/whisper_frontend.cpp
     src/framework/modules/speech_encoders/campplus_encoder.cpp
+    src/framework/modules/pitch_extractors/rmvpe_pitch_extractor.cpp
     src/framework/modules/vocoders/bigvgan_vocoder.cpp
     src/framework/modules/vocoders/hift_vocoder.cpp
     src/framework/modules/speech_encoders/hubert_encoder.cpp
+    src/framework/modules/speech_encoders/wav2vec2_bert_encoder.cpp
     src/framework/modules/speech_encoders/wavlm_encoder.cpp
     src/framework/modules/speech_encoders/sanm.cpp
     src/framework/modules/optimizations/fast_conv_modules.cpp
@@ -293,6 +297,7 @@ add_library(engine_core OBJECT
     src/framework/modules/attention/relative_attention.cpp
     src/framework/modules/attention/scaled_dot_product_attention.cpp
     src/framework/modules/attention/grouped_query_attention.cpp
+    src/framework/modules/attention/projected_grouped_self_attention.cpp
     src/framework/modules/attention/streaming_frame_attention_cache.cpp
     src/framework/modules/transformers/qwen_decoder.cpp
     src/framework/modules/transformers/qwen_causal_decoder.cpp
@@ -304,6 +309,7 @@ add_library(engine_core OBJECT
     src/framework/modules/positional_modules.cpp
     src/framework/modules/text_encoders/t5_base_encoder.cpp
     src/framework/modules/text_encoders/t5_gemma_encoder.cpp
+    src/framework/modules/transformers/gemma_decoder.cpp
     src/framework/modules/optimizations/fast_kv_modules.cpp
     src/framework/tokenizers/hf_tokenizer_json.cpp
     src/framework/tokenizers/llama_bpe.cpp
@@ -681,12 +687,11 @@ audiocpp_add_model(dramabox
         src/models/dramabox/gemma_tokenizer.cpp
         src/models/dramabox/gemma3_encoder.cpp
         src/models/dramabox/latent_state.cpp
-        src/models/dramabox/loader.cpp
         src/models/dramabox/prompt_connector.cpp
         src/models/dramabox/session.cpp
         src/models/dramabox/vocoder.cpp
     INCLUDES
-        engine/models/dramabox/loader.h
+        engine/models/dramabox/session.h
     LOADERS
         engine::models::dramabox::make_dramabox_loader
 )
@@ -1001,9 +1006,8 @@ audiocpp_add_model(rvc
         src/models/rvc/session.cpp
         src/models/rvc/synthesizer.cpp
         src/models/rvc/voice_model.cpp
-        src/models/rvc/loader.cpp
     INCLUDES
-        engine/models/rvc/loader.h
+        engine/models/rvc/session.h
     LOADERS
         engine::models::rvc::make_rvc_loader
 )
@@ -1495,6 +1499,13 @@ if (ENGINE_BUILD_TESTS)
     add_test(
         NAME unicode_normalization_test
         COMMAND unicode_normalization_test
+    )
+
+    add_engine_unittest(text_normalization_test tests/unittests/test_text_normalization.cpp)
+
+    add_test(
+        NAME text_normalization_test
+        COMMAND text_normalization_test
     )
 
     add_engine_unittest(outetts_generation_budget_test tests/unittests/test_outetts_generation_budget.cpp)

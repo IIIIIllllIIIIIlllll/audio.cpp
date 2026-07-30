@@ -152,29 +152,31 @@
       }
     }
   ],
+  "package_defaults": {
+    "download": {
+      "kind": "huggingface_snapshot",
+      "repo": "audio-cpp/audio.cpp-gguf",
+      "revision": "main",
+      "gated": false
+    }
+  },
   "packages": [
     {
-      "id": "kroko_asr_community_converted",
-      "display_name": "Kroko Community ASR converted layout",
+      "id": "kroko_asr_community_q8_0",
+      "display_name": "Kroko Community ASR Q8_0 GGUF",
       "default": true,
-      "format": "safetensors",
-      "precision": "native",
-      "target_directory": "Kroko-ASR-Community",
+      "format": "gguf",
+      "precision": "q8_0",
+      "target_directory": "Kroko-ASR-GGUF",
       "files": [
-        "config.json",
-        "model.safetensors",
-        "tokens.txt"
+        "Kroko-ASR-GGUF/kroko-en-community-64-l-q8_0.gguf"
       ],
-      "download": {
-        "kind": "converter",
-        "converter": "tools/community_models/convert_kroko_onnx.py",
-        "description": "Convert a downloaded public free Kroko Community .data package into the native audio.cpp safetensors layout."
-      }
+      "strip_prefix": "Kroko-ASR-GGUF"
     }
   ],
   "dependencies": [],
   "ui": {
-    "recommended_package": "kroko_asr_community_converted",
+    "recommended_package": "kroko_asr_community_q8_0",
     "tags": [
       "ASR",
       "GGUF"

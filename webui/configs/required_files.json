@@ -1,5 +1,5 @@
 {
-  "_comment": "download_id -> files that must exist inside the installed model directory (relative paths, forward slashes). Mirrors ModelPackage.required_files in tools/model_manager.py - the post-install validation list, i.e. the final on-disk layout AFTER conversions (e.g. ace_step silence_latent.pt -> .safetensors). webui.py uses this to tell a complete install apart from a manually copied / interrupted directory. Regenerate after editing the model_manager CATALOG: venv\\Scripts\\python.exe with this repo's tools/ on sys.path, dump {p.id: list(p.required_files) for p in CATALOG}.",
+  "_comment": "Legacy fallback download_id -> files that must exist inside the installed model directory (relative paths, forward slashes). WebUI downloads and primary required-file metadata now come from model_specs/; this file only helps identify incomplete already-installed legacy directories.",
   "ace_step": [
     "Qwen3-Embedding-0.6B/model.safetensors",
     "acestep-5Hz-lm-1.7B/model.safetensors",

@@ -1,12 +1,12 @@
 #include "engine/models/confucius4_tts/tokenizer_text.h"
 
-#include "engine/framework/io/text.h"
 #include "engine/framework/runtime/options.h"
+#include "engine/framework/text/chinese_normalization.h"
 #include "engine/framework/text/chunking.h"
+#include "engine/framework/text/text_normalization.h"
 #include "engine/framework/text/utf8.h"
 
 #include <algorithm>
-#include <cctype>
 #include <iterator>
 #include <stdexcept>
 #include <string>
@@ -159,76 +159,6 @@ std::string substring_codepoints(const std::string & text, const std::vector<Cod
     return text.substr(spans[start].start, spans[end - 1].end - spans[start].start);
 }
 
-std::string collapse_ascii_space(std::string text) {
-    std::string out;
-    out.reserve(text.size());
-    bool previous_space = false;
-    for (const char ch : text) {
-        const bool space = ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
-        if (space) {
-            if (!previous_space) {
-                out.push_back(' ');
-            }
-        } else {
-            out.push_back(ch);
-        }
-        previous_space = space;
-    }
-    return engine::io::trim_ascii_whitespace(std::move(out));
-}
-
-std::string replace_all(std::string text, std::string_view from, std::string_view to) {
-    for (size_t pos = text.find(from); pos != std::string::npos; pos = text.find(from, pos + to.size())) {
-        text.replace(pos, from.size(), to);
-    }
-    return text;
-}
-
-bool is_ascii_non_space(std::string_view ch) noexcept {
-    return ch.size() == 1 && static_cast<unsigned char>(ch.front()) <= 0x7FU && ch.front() != ' ';
-}
-
-std::string remove_blank_between_chinese(const std::string & text) {
-    const auto spans = split_codepoints(text, "Confucius4-TTS text");
-    std::string out;
-    out.reserve(text.size());
-    for (size_t i = 0; i < spans.size(); ++i) {
-        if (spans[i].text == " " && i > 0 && i + 1 < spans.size()) {
-            if (is_ascii_non_space(spans[i - 1].text) && is_ascii_non_space(spans[i + 1].text)) {
-                out.push_back(' ');
-            }
-            continue;
-        }
-        out.append(spans[i].text);
-    }
-    return out;
-}
-
-std::string normalize_chinese(std::string text) {
-    text = remove_blank_between_chinese(text);
-    text = replace_all(std::move(text), "²", "平方");
-    text = replace_all(std::move(text), "³", "立方");
-    text = replace_all(std::move(text), ".", "。");
-    text = replace_all(std::move(text), " - ", "，");
-    text = replace_all(std::move(text), "（", "");
-    text = replace_all(std::move(text), "）", "");
-    text = replace_all(std::move(text), "【", "");
-    text = replace_all(std::move(text), "】", "");
-    text = replace_all(std::move(text), "`", "");
-    text = replace_all(std::move(text), "——", " ");
-
-    const auto spans = split_codepoints(text, "Confucius4-TTS Chinese text");
-    size_t trim_pos = spans.size();
-    while (trim_pos > 0 &&
-           (spans[trim_pos - 1].text == "，" || spans[trim_pos - 1].text == "," || spans[trim_pos - 1].text == "、")) {
-        --trim_pos;
-    }
-    if (trim_pos != spans.size()) {
-        return substring_codepoints(text, spans, 0, trim_pos) + "。";
-    }
-    return text;
-}
-
 bool is_segment_punctuation(std::string_view ch, const std::string & language) {
     if (language == "zh") {
         return ch == "。" || ch == "？" || ch == "！" || ch == "；" || ch == "：" ||
@@ -372,11 +302,18 @@ ConfuciusTextTokenizer::ConfuciusTextTokenizer(std::shared_ptr<const ConfuciusAs
 }
 
 std::string ConfuciusTextTokenizer::normalize(const std::string & text, const std::string & language) const {
-    std::string normalized = collapse_ascii_space(text);
     if (language == "zh") {
-        return normalize_chinese(std::move(normalized));
+        return engine::text::normalize_chinese_text(
+            engine::text::collapse_ascii_whitespace(text),
+            engine::text::ChineseTextNormalizationTarget::Confucius4TTS);
     }
-    return normalized;
+    if (language == "ja") {
+        return engine::text::collapse_ascii_whitespace(text);
+    }
+    if (language == "en") {
+        return engine::text::normalize_english_text(text);
+    }
+    return engine::text::collapse_ascii_whitespace(text);
 }
 
 std::string ConfuciusTextTokenizer::format_prompt(const std::string & text, const std::string & language) const {

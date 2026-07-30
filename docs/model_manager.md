@@ -82,22 +82,21 @@ python3 tools/model_manager.py info voxcpm2_audiovae
 python3 tools/model_manager.py install voxcpm2_audiovae --source-file models/VoxCPM2/audiovae.pth --models-root models --overwrite
 ```
 
-Kroko Community packages use the same converter-style flow. For example:
+Kroko Community defaults to the ready-to-use GGUF package:
 
 ```bash
-python3 tools/model_manager.py install kroko_asr_community_converted \
-  --source-file models/Kroko-ASR/Kroko-DE-Community-64-L-Streaming-001.data \
-  --models-root models/Kroko-ASR --overwrite
+python3 tools/model_manager.py install kroko_asr_community_q8_0 --models-root models --overwrite
 ```
 
-Unless `--variant` is supplied, the manager derives a language/size-specific
-directory such as `Kroko-DE-Community-64-L-Native` from the source filename.
-This keeps separately installed Kroko languages from overwriting one another.
+The original Kroko `.data` conversion workflow remains documented in the
+community model guide for users who want to build from the upstream source
+package themselves.
 
 ## Package Notes
 
-For shared audio.cpp GGUF packages, the model manager installs the default `q8_0`
-GGUF. Other precision variants can be downloaded directly from
+For shared audio.cpp GGUF packages, the model manager installs the default GGUF.
+That is usually `q8_0`; FP32-only packages such as Inflect Micro v2 use
+original dtype instead. Other precision variants can be downloaded directly from
 [audio-cpp/audio.cpp-gguf](https://huggingface.co/audio-cpp/audio.cpp-gguf).
 
 `Yes` means Hugging Face has a ready-to-use repo that the framework can download
@@ -121,12 +120,11 @@ Packages whose loaders are not registered in the current release tree are listed
 | `higgs_audio_v3_tts_4b` | Higgs Audio v3 TTS 4B GGUF Q8_0 | **Yes** |
 | `htdemucs` | HTDemucs | No |
 | `hviske_asr` | Hviske ASR | **Yes** |
-| `inflect_micro_v2` | Inflect Micro v2 FP32 | No |
-| `inflect_nano_v2` | Inflect Nano v2 FP32 | No |
+| `inflect_micro_v2_orig` | Inflect Micro v2 Original-Dtype GGUF | **Yes** |
 | `irodori_tts_500m_v3` | Irodori-TTS 500M v3 | No |
 | `irodori_tts_600m_v3_voice_design` | Irodori-TTS 600M v3 VoiceDesign | No |
 | `index_tts2` | IndexTTS-2 | **Yes** |
-| `kroko_asr_community_converted` | Kroko Community ASR converted layout | No |
+| `kroko_asr_community_q8_0` | Kroko Community ASR Q8_0 GGUF | **Yes** |
 | `mel_band_roformer` | Mel-Band RoFormer MLX | **Yes** |
 | `miocodec_25hz_44k_v2` | MioCodec 25Hz 44.1kHz v2 | No |
 | `miotts_1_7b` | MioTTS 1.7B | No |
@@ -138,6 +136,8 @@ Packages whose loaders are not registered in the current release tree are listed
 | `nemotron_asr` | Nemotron ASR | **Yes** |
 | `omnivoice` | OmniVoice | **Yes** |
 | `outetts_1_0_1b` | OuteTTS 1.0 1B with IBM DAC codec and Qwen3-aligned voice cloning | No |
+| `parakeet_tdt_f16` | Parakeet-TDT 0.6B v3 F16 GGUF | **Yes** |
+| `parakeet_tdt_q8_0` | Parakeet-TDT 0.6B v3 Q8_0 GGUF | **Yes** |
 | `pocket_tts` | PocketTTS | **Yes** |
 | `qwen3_asr_0_6b` | Qwen3 ASR 0.6B | **Yes** |
 | `qwen3_asr_1_7b_hf` | Qwen3 ASR 1.7B HF | **Yes** |

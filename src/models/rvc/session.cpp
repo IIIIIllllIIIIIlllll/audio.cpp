@@ -3,6 +3,7 @@
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/debug/trace.h"
 #include "engine/framework/runtime/options.h"
+#include "engine/framework/runtime/spec_backed_model.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -15,6 +16,23 @@
 
 namespace engine::models::rvc {
 namespace {
+
+constexpr const char * kFamily = "rvc";
+
+std::shared_ptr<const RvcAssets> require_assets(std::shared_ptr<const RvcAssets> assets) {
+    if (assets == nullptr) {
+        throw std::runtime_error("RVC session requires assets");
+    }
+    return assets;
+}
+
+std::shared_ptr<const engine::model_spec::ModelContract> require_contract(
+    std::shared_ptr<const engine::model_spec::ModelContract> contract) {
+    if (contract == nullptr) {
+        throw std::runtime_error("RVC session requires a model contract");
+    }
+    return contract;
+}
 
 engine::assets::TensorStorageType rvc_weight_type_from_options(const runtime::SessionOptions & options) {
     const auto it = options.options.find("rvc.weight_type");
@@ -80,16 +98,16 @@ RvcInferenceConfig request_config(const runtime::TaskRequest & request) {
 RvcSession::RvcSession(
     runtime::TaskSpec task,
     runtime::SessionOptions options,
-    std::shared_ptr<const RvcAssets> assets)
+    std::shared_ptr<const RvcAssets> assets,
+    std::shared_ptr<const engine::model_spec::ModelContract> contract)
     : RuntimeSessionBase(options),
       task_(task),
-      assets_(std::move(assets)),
+      assets_(require_assets(std::move(assets))),
+      contract_(require_contract(std::move(contract))),
       weight_storage_type_(rvc_weight_type_from_options(RuntimeSessionBase::options())),
       pipeline_(assets_, execution_context().config(), weight_storage_type_),
       user_voice_cache_(user_voice_cache_slots_from_options(RuntimeSessionBase::options())) {
-    if (assets_ == nullptr) {
-        throw std::runtime_error("RVC session requires assets");
-    }
+    runtime::validate_spec_backed_session_options(RuntimeSessionBase::options(), *contract_, kFamily, "RVC");
     if (task_.task != runtime::VoiceTaskKind::VoiceConversion) {
         throw std::runtime_error("RVC models only support --task vc");
     }
@@ -99,7 +117,7 @@ RvcSession::RvcSession(
 }
 
 std::string RvcSession::family() const {
-    return "rvc";
+    return kFamily;
 }
 
 runtime::VoiceTaskKind RvcSession::task_kind() const {
@@ -122,6 +140,7 @@ void RvcSession::prepare(const runtime::SessionPreparationRequest & request) {
 
 runtime::TaskResult RvcSession::run(const runtime::TaskRequest & request) {
     require_prepared("RVC run()");
+    runtime::validate_spec_backed_request_options(request.options, *contract_, "RVC");
     if (!request.audio_input.has_value()) {
         throw std::runtime_error("RVC run() requires audio_input");
     }
@@ -180,6 +199,25 @@ runtime::TaskResult RvcSession::run(const runtime::TaskRequest & request) {
     runtime::TaskResult result;
     result.audio_output = std::move(output);
     return result;
+}
+
+// Loading adapter: RVC uses the schema-v1 spec-backed loader, so the loader
+// wiring stays beside the session it constructs.
+std::shared_ptr<runtime::IVoiceModelLoader> make_rvc_loader() {
+    runtime::SpecBackedVoiceModelConfig<RvcAssets> config;
+    config.family = kFamily;
+    config.load_assets = load_rvc_assets;
+    config.create_session = [](const runtime::TaskSpec & task,
+                                const runtime::SessionOptions & options,
+                                std::shared_ptr<const RvcAssets> assets,
+                                std::shared_ptr<const engine::model_spec::ModelContract> contract) {
+        return std::make_unique<RvcSession>(
+            task,
+            options,
+            std::move(assets),
+            std::move(contract));
+    };
+    return runtime::make_spec_backed_voice_loader(std::move(config));
 }
 
 }  // namespace engine::models::rvc

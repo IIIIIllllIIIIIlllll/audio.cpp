@@ -56,10 +56,12 @@ Runtime tags: safetensors is the default model loading path. `GGUF 16/Q8/Q4` mea
 
 | Family | Task | Lang | Variants | Runtime |
 |---|---|---|---|---|
-| **ace_step** | Music, Edit | 50+ langs | ACE-Step 1.5 Turbo and Base with acestep-5Hz-lm-1.7B | GGUF 16/Q8 |
+| **ace_step** | Music, Edit | 50+ langs | ACE-Step 1.5 Turbo and Base with acestep-5Hz-lm-1.7B | GGUF 16 |
 | **bs_roformer** | Sep | lang agnostic | BS-RoFormer vocal separation checkpoints | GGUF Q8 |
 | **chatterbox** | TTS, Clone, VC| ar, da, de, el, en, es, fi, fr, hi, it, ko, ms, nl, no, pl, pt, sv, sw, tr | Chatterbox with 0.5B backbone | GGUF 16/Q8 |
+| **confucius4_tts** | Clone | zh, en, ja, ko, de, fr, es, id, it, th, pt, ru, ms, vi | Confucius4-TTS multilingual voice cloning | GGUF F32, Stream |
 | **citrinet_asr** | ASR | en | Citrinet-256 | GGUF Q8 |
+| **dramabox** | TTS, Clone | en | DramaBox expressive TTS and voice cloning | GGUF Q8 |
 | **fish_audio** | TTS, Clone, Ctrl | auto, en, zh | Fish Audio S2 Pro | GGUF 16/Q8 |
 | **fun_asr_nano** | ASR | auto, zh, en, ja | Fun-ASR-Nano-2512 | GGUF 16/Q8 |
 | **heartmula** | Music | zh, en, ja, ko, es | HeartMuLa-oss-3B with HeartCodec-oss | GGUF 16/Q8 |
@@ -77,6 +79,7 @@ Runtime tags: safetensors is the default model loading path. `GGUF 16/Q8/Q4` mea
 | **qwen3_asr** | ASR | zh, en, yue, ar, de, fr, es, pt, id, it, ko, ru, th, vi, ja, tr, hi, ms, nl, sv, da, fi, pl, cs, fil, fa, el, ro, hu, mk | Qwen3-ASR-0.6B, Qwen3-ASR-1.7B-hf | GGUF 16/Q8 |
 | **qwen3_forced_aligner** | Align | zh, yue, en, de, es, fr, it, pt, ru, ko, ja | Qwen3-ForcedAligner-0.6B | GGUF 16/Q8 |
 | **qwen3_tts** | TTS, Clone, Design, Ctrl | zh, en, fr, de, it, ja, ko, pt, ru, es | Qwen3-TTS-12Hz-0.6B-Base, Qwen3-TTS-12Hz-1.7B-Base, Qwen3-TTS-12Hz-1.7B-CustomVoice, Qwen3-TTS-12Hz-1.7B-VoiceDesign | GGUF 16/Q8 |
+| **rvc** | VC | lang agnostic | RVC F16 GGUF with packaged v1/v2 voices and optional retrieval blending | GGUF 16 |
 | **seed_vc** | VC | lang agnostic | SeedVC XLS-R + HiFT, SeedVC Whisper-small + BigVGAN | GGUF 16/Q8 |
 | **silero_vad** | VAD | lang agnostic | Silero VAD | Bundled, Stream |
 | **sortformer_diar** | Diar | en | Sortformer-4spk-v1 | - |
@@ -626,7 +629,7 @@ For long-form TTS tests, each run uses the same 6,026-character, 1,028-word inpu
 
 ## Runtime Memory Options
 
-Some models expose memory-saver session options such as `ace_step.mem_saver=true`, `heartmula.mem_saver=true`, `stable_audio.mem_saver=true`, `omnivoice.mem_saver=true`, and `voxcpm2.mem_saver=true`. These options keep the default output path unchanged while reducing graph workspace VRAM or releasing staged graph/cache state after request phases; later requests may rebuild released graphs.
+Some models expose memory-saver session options such as `ace_step.mem_saver=true`, `dramabox.mem_saver=true`, `heartmula.mem_saver=true`, `stable_audio.mem_saver=true`, `omnivoice.mem_saver=true`, and `voxcpm2.mem_saver=true`. These options keep the default output path unchanged while reducing graph workspace VRAM or releasing staged graph/cache state after request phases; later requests may rebuild released graphs.
 
 ## Precision/Quantization Support
 

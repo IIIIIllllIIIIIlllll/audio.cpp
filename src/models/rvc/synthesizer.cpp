@@ -11,6 +11,7 @@
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/sampling/torch_random.h"
 #include "engine/framework/modules/structural_modules.h"
+#include "engine/framework/modules/weight_binding.h"
 
 #include <ggml-alloc.h>
 
@@ -76,17 +77,6 @@ TensorShape shape_from_vector(const std::vector<int64_t> & dims) {
     }
 }
 
-int64_t elements(const std::vector<int64_t> & dims) {
-    int64_t out = 1;
-    for (const auto dim : dims) {
-        if (dim <= 0) {
-            throw std::runtime_error("RVC synthesizer tensor has non-positive dimension");
-        }
-        out *= dim;
-    }
-    return out;
-}
-
 bool has_suffix(const std::string & value, const std::string & suffix) {
     return value.size() >= suffix.size() &&
         value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
@@ -133,28 +123,6 @@ std::vector<float> fold_weight_norm(
     return out;
 }
 
-void load_plain_tensor(
-    RvcSynthesizerWeights & weights,
-    const engine::assets::TensorSource & source,
-    const engine::assets::TensorMetadata & tensor,
-    engine::assets::TensorStorageType storage_type) {
-    (void)elements(tensor.shape);
-    const bool force_f32 =
-        has_suffix(tensor.name, ".bias") ||
-        has_suffix(tensor.name, ".gamma") ||
-        has_suffix(tensor.name, ".beta") ||
-        tensor.name == "emb_g.weight" ||
-        tensor.name == "enc_p.emb_pitch.weight";
-    weights.tensors.emplace(
-        tensor.name,
-        force_f32
-            ? weights.store->load_f32_tensor(source, tensor.name, tensor.shape)
-            : weights.store->load_tensor(source, tensor.name, storage_type, tensor.shape));
-    if (has_suffix(tensor.name, ".emb_rel_k") || has_suffix(tensor.name, ".emb_rel_v")) {
-        weights.relative_embeddings.emplace(tensor.name, source.require_f32(tensor.name, tensor.shape));
-    }
-}
-
 std::shared_ptr<RvcSynthesizerWeights> load_weights(
     std::shared_ptr<const engine::assets::TensorSource> source,
     engine::core::BackendConfig backend,
@@ -181,7 +149,20 @@ std::shared_ptr<RvcSynthesizerWeights> load_weights(
         if (has_suffix(tensor.name, ".weight_g") || has_suffix(tensor.name, ".weight_v")) {
             continue;
         }
-        load_plain_tensor(*weights, *source, tensor, storage_type);
+        const bool force_f32 =
+            has_suffix(tensor.name, ".bias") ||
+            has_suffix(tensor.name, ".gamma") ||
+            has_suffix(tensor.name, ".beta") ||
+            tensor.name == "emb_g.weight" ||
+            tensor.name == "enc_p.emb_pitch.weight";
+        weights->tensors.emplace(
+            tensor.name,
+            force_f32
+                ? engine::modules::binding::f32_tensor_from_named_source(*weights->store, *source, tensor.name)
+                : engine::modules::binding::tensor_from_named_source(*weights->store, *source, tensor.name, storage_type));
+        if (has_suffix(tensor.name, ".emb_rel_k") || has_suffix(tensor.name, ".emb_rel_v")) {
+            weights->relative_embeddings.emplace(tensor.name, source->require_f32(tensor.name, tensor.shape));
+        }
     }
     for (const auto & tensor : tensors) {
         if (!has_suffix(tensor.name, ".weight_v")) {
@@ -241,10 +222,6 @@ engine::modules::NormWeights gamma_beta_weights(const RvcSynthesizerWeights & we
 
 TensorValue contiguous(engine::core::ModuleBuildContext & ctx, const TensorValue & value) {
     return engine::core::ensure_backend_addressable_layout(ctx, value);
-}
-
-TensorValue add_same(engine::core::ModuleBuildContext & ctx, const TensorValue & lhs, const TensorValue & rhs) {
-    return engine::modules::AddModule().build(ctx, lhs, rhs);
 }
 
 TensorValue sub_same(engine::core::ModuleBuildContext & ctx, const TensorValue & lhs, const TensorValue & rhs) {
@@ -410,12 +387,12 @@ TensorValue rvc_self_attention(
         ctx,
         q_scaled,
         engine::modules::TransposeModule({{0, 1, 3, 2}, 4}).build(ctx, rel_k));
-    scores = add_same(ctx, scores, relative_position_to_absolute_position(ctx, rel_logits));
+    scores = engine::modules::AddModule{}.build(ctx, scores, relative_position_to_absolute_position(ctx, rel_logits));
     auto attn = engine::core::wrap_tensor(ggml_soft_max(ctx.ggml, contiguous(ctx, scores).tensor), scores.shape, GGML_TYPE_F32);
     auto out = engine::modules::MatMulModule().build(ctx, attn, v);
     auto rel_v = relative_embedding_input(ctx, weights, prefix + ".emb_rel_v", frames, graph_inputs);
     auto relative_weights = absolute_position_to_relative_position(ctx, attn);
-    out = add_same(ctx, out, engine::modules::MatMulModule().build(ctx, relative_weights, rel_v));
+    out = engine::modules::AddModule{}.build(ctx, out, engine::modules::MatMulModule().build(ctx, relative_weights, rel_v));
     out = engine::modules::TransposeModule({{0, 1, 3, 2}, 4}).build(ctx, out);
     out = engine::core::reshape_tensor(ctx, contiguous(ctx, out), TensorShape::from_dims({1, kHiddenChannels, frames}));
     return engine::modules::Conv1dModule({kHiddenChannels, kHiddenChannels, 1, 1, 0, 1, true})
@@ -460,7 +437,7 @@ TensorValue build_text_encoder_stats(
                 contiguous(ctx, transpose_btc_bct(ctx, pitch)),
                 {1, kHiddenChannels, features_btd.shape.dims[1]}});
         }
-        x = add_same(ctx, x, pitch);
+        x = engine::modules::AddModule{}.build(ctx, x, pitch);
         if (trace_enabled) {
             trace_tensors.push_back({
                 "rvc.synth.sum_pre_bct",
@@ -484,12 +461,12 @@ TensorValue build_text_encoder_stats(
         auto y = rvc_self_attention(ctx, x, weights, layer, graph_inputs);
         x = rvc_layer_norm_bct(
             ctx,
-            add_same(ctx, x, y),
+            engine::modules::AddModule{}.build(ctx, x, y),
             gamma_beta_weights(weights, "enc_p.encoder.norm_layers_1." + std::to_string(layer)));
         y = rvc_ffn(ctx, x, weights, layer);
         x = rvc_layer_norm_bct(
             ctx,
-            add_same(ctx, x, y),
+            engine::modules::AddModule{}.build(ctx, x, y),
             gamma_beta_weights(weights, "enc_p.encoder.norm_layers_2." + std::to_string(layer)));
         if (trace_enabled && (layer == 0 || layer == kTextLayers - 1)) {
             trace_tensors.push_back({
@@ -532,17 +509,17 @@ TensorValue build_wn(
                         .build(ctx, x, conv1d_weights(weights, prefix + ".in_layers." + std::to_string(layer)));
         auto g_l = engine::modules::SliceModule({1, layer * kHiddenChannels * 2, kHiddenChannels * 2}).build(ctx, cond);
         g_l = repeat_like(ctx, g_l, x_in);
-        auto acts = fused_tanh_sigmoid(ctx, add_same(ctx, x_in, g_l));
+        auto acts = fused_tanh_sigmoid(ctx, engine::modules::AddModule{}.build(ctx, x_in, g_l));
         const int64_t res_skip_channels = layer < 2 ? kHiddenChannels * 2 : kHiddenChannels;
         auto res_skip = engine::modules::Conv1dModule({kHiddenChannels, res_skip_channels, 1, 1, 0, 1, true})
                             .build(ctx, acts, conv1d_weights(weights, prefix + ".res_skip_layers." + std::to_string(layer)));
         if (layer < 2) {
             auto res = engine::modules::SliceModule({1, 0, kHiddenChannels}).build(ctx, res_skip);
             auto skip = engine::modules::SliceModule({1, kHiddenChannels, kHiddenChannels}).build(ctx, res_skip);
-            x = add_same(ctx, x, res);
-            output = add_same(ctx, output, skip);
+            x = engine::modules::AddModule{}.build(ctx, x, res);
+            output = engine::modules::AddModule{}.build(ctx, output, skip);
         } else {
-            output = add_same(ctx, output, res_skip);
+            output = engine::modules::AddModule{}.build(ctx, output, res_skip);
         }
     }
     return output;
@@ -628,7 +605,7 @@ TensorValue resblock1(
         xt = leaky_relu(ctx, xt);
         xt = engine::modules::Conv1dModule({channels, channels, kernel, 1, static_cast<int>((kernel - 1) / 2), 1, true})
                  .build(ctx, xt, conv1d_weights(weights, prefix + ".convs2." + std::to_string(layer)));
-        x = add_same(ctx, x, xt);
+        x = engine::modules::AddModule{}.build(ctx, x, xt);
     }
     return x;
 }
@@ -672,7 +649,7 @@ TensorValue build_generator(
                  .build(ctx, z, conv1d_weights(weights, "dec.conv_pre"));
     auto cond = engine::modules::Conv1dModule({256, 512, 1, 1, 0, 1, true})
                     .build(ctx, g, conv1d_weights(weights, "dec.cond"));
-    x = add_same(ctx, x, repeat_like(ctx, cond, x));
+    x = engine::modules::AddModule{}.build(ctx, x, repeat_like(ctx, cond, x));
 
     const int64_t up_rates[4] = {10, 10, 2, 2};
     const int64_t up_kernels[4] = {16, 16, 4, 4};
@@ -703,12 +680,12 @@ TensorValue build_generator(
                 static_cast<int>(noise_paddings[up]),
                 1,
                 true}).build(ctx, source, conv1d_weights(weights, "dec.noise_convs." + std::to_string(up)));
-            x = add_same(ctx, x, x_source);
+            x = engine::modules::AddModule{}.build(ctx, x, x_source);
         }
         TensorValue sum;
         for (int64_t kernel_index = 0; kernel_index < 3; ++kernel_index) {
             auto rb = resblock1(ctx, x, weights, up * 3 + kernel_index, channels[up], kernels[kernel_index]);
-            sum = sum.valid() ? add_same(ctx, sum, rb) : rb;
+            sum = sum.valid() ? engine::modules::AddModule{}.build(ctx, sum, rb) : rb;
         }
         x = mul_scalar(ctx, sum, 1.0F / 3.0F);
     }
@@ -839,7 +816,7 @@ RvcSynthesizerOutput RvcSynthesizer::infer(const RvcSynthesizerInput & input) co
         stats = contiguous(ctx, stats);
         state_->m = contiguous(ctx, engine::modules::SliceModule({1, 0, kInterChannels}).build(ctx, stats));
         state_->logs = contiguous(ctx, engine::modules::SliceModule({1, kInterChannels, kInterChannels}).build(ctx, stats));
-        state_->z_p = add_same(
+        state_->z_p = engine::modules::AddModule{}.build(
             ctx,
             state_->m,
             mul_scalar(ctx, engine::modules::MulModule().build(ctx, exp_value(ctx, state_->logs), state_->noise), 0.66666F));
@@ -869,9 +846,6 @@ RvcSynthesizerOutput RvcSynthesizer::infer(const RvcSynthesizerInput & input) co
             !ggml_gallocr_alloc_graph(state_->gallocr, state_->graph)) {
             throw std::runtime_error("failed to allocate RVC synthesizer graph tensors");
         }
-        for (const auto & graph_input : state_->graph_inputs) {
-            engine::core::write_tensor_f32(graph_input.tensor, graph_input.values);
-        }
     }
     engine::core::write_tensor_f32(state_->features, input.features);
     if (has_f0) {
@@ -883,6 +857,9 @@ RvcSynthesizerOutput RvcSynthesizer::infer(const RvcSynthesizerInput & input) co
         1234,
         engine::sampling::TorchRandnPrecision::Float32);
     engine::core::write_tensor_f32(state_->noise, noise);
+    for (const auto & graph_input : state_->graph_inputs) {
+        engine::core::write_tensor_f32(graph_input.tensor, graph_input.values);
+    }
     if (engine::core::compute_backend_graph(state_->weights->execution_context->backend(), state_->graph) != GGML_STATUS_SUCCESS) {
         throw std::runtime_error("ggml_backend_graph_compute failed for RVC synthesizer");
     }

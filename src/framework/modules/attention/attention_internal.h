@@ -3,6 +3,7 @@
 #include "engine/framework/modules/attention_modules.h"
 
 #include "engine/framework/modules/linear_module.h"
+#include "engine/framework/modules/optimizations/fast_projection_modules.h"
 #include "../module_internal.h"
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
@@ -54,6 +55,16 @@ inline const core::ModuleSchema kFeedForwardGeluSchema = {
     kSingleOutput,
     1,
     "Applies a two-layer MLP block with tanh-approximated GELU activation.",
+};
+
+inline const core::ModuleSchema kGatedFeedForwardSchema = {
+    "GatedFeedForward",
+    "nn.block",
+    kInputOutputInputs,
+    1,
+    kSingleOutput,
+    1,
+    "Applies a gated feed-forward block using gate, up, and down projections.",
 };
 
 inline const core::ModuleSchema kSelfAttentionSchema = {
@@ -354,6 +365,30 @@ inline LinearWeights make_linear_weights(const core::TensorValue & weight, const
     return LinearWeights{weight, bias};
 }
 
+inline bool dense_projection_weight(ggml_type type) {
+    return type == GGML_TYPE_F32 || type == GGML_TYPE_F16 || type == GGML_TYPE_BF16;
+}
+
+inline core::TensorValue build_linear_projection_impl(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const LinearWeights & weights,
+    int64_t in_features,
+    int64_t out_features,
+    bool use_bias,
+    ggml_prec precision,
+    bool use_weight_type_precision,
+    bool use_fast_cuda_projection) {
+    const ggml_prec resolved_precision = use_weight_type_precision
+        ? (ggml_is_quantized(weights.weight.type) ? GGML_PREC_DEFAULT : GGML_PREC_F32)
+        : precision;
+    if (use_fast_cuda_projection && !use_bias && ctx.backend_type == core::BackendType::Cuda &&
+        dense_projection_weight(weights.weight.type) && out_features >= 128 && out_features % 4 == 0) {
+        return FastPackedProjection4Module({in_features, out_features, resolved_precision}).build(ctx, input, weights);
+    }
+    return LinearModule({in_features, out_features, use_bias, resolved_precision}).build(ctx, input, weights);
+}
+
 inline FeedForwardWeights require_feed_forward_weights(const FeedForwardWeights & weights, bool use_bias) {
     if (use_bias && (!weights.fc1_bias.has_value() || !weights.fc2_bias.has_value())) {
         throw std::runtime_error("FeedForward biases are required when use_bias is true");
@@ -373,6 +408,62 @@ inline core::TensorValue build_feed_forward_impl(
     auto hidden = fc1.build(ctx, input, make_linear_weights(weights.fc1_weight, weights.fc1_bias));
     hidden = gelu.build(ctx, hidden);
     return fc2.build(ctx, hidden, make_linear_weights(weights.fc2_weight, weights.fc2_bias));
+}
+
+inline GatedFeedForwardWeights require_gated_feed_forward_weights(
+    const GatedFeedForwardWeights & weights,
+    bool use_bias) {
+    if (use_bias &&
+        (!weights.gate_proj.bias.has_value() || !weights.up_proj.bias.has_value() || !weights.down_proj.bias.has_value())) {
+        throw std::runtime_error("GatedFeedForward biases are required when use_bias is true");
+    }
+    return weights;
+}
+
+inline core::TensorValue build_gated_feed_forward_impl(
+    core::ModuleBuildContext & ctx,
+    const core::TensorValue & input,
+    const GatedFeedForwardConfig & config,
+    const GatedFeedForwardWeights & weights) {
+    auto gate = build_linear_projection_impl(
+        ctx,
+        input,
+        weights.gate_proj,
+        config.hidden_size,
+        config.intermediate_size,
+        config.use_bias,
+        config.projection_precision,
+        config.use_weight_type_projection_precision,
+        config.use_fast_cuda_projection);
+    switch (config.activation) {
+        case GatedFeedForwardActivation::Gelu:
+            gate = GeluModule({config.gelu_approximation}).build(ctx, gate);
+            break;
+        case GatedFeedForwardActivation::Silu:
+            gate = SiluModule{}.build(ctx, gate);
+            break;
+    }
+    auto up = build_linear_projection_impl(
+        ctx,
+        input,
+        weights.up_proj,
+        config.hidden_size,
+        config.intermediate_size,
+        config.use_bias,
+        config.projection_precision,
+        config.use_weight_type_projection_precision,
+        config.use_fast_cuda_projection);
+    auto hidden = MulModule{}.build(ctx, gate, up);
+    return build_linear_projection_impl(
+        ctx,
+        hidden,
+        weights.down_proj,
+        config.intermediate_size,
+        config.hidden_size,
+        config.use_bias,
+        config.projection_precision,
+        config.use_weight_type_projection_precision,
+        config.use_fast_cuda_projection);
 }
 
 inline AttentionWeights require_attention_weights(const AttentionWeights & weights, bool use_bias) {

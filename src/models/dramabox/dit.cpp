@@ -6,10 +6,12 @@
 #include "engine/framework/modules/activation_modules.h"
 #include "engine/framework/modules/attention/feed_forward.h"
 #include "engine/framework/modules/attention/scaled_dot_product_attention.h"
+#include "engine/framework/modules/conditioning_modules.h"
 #include "engine/framework/modules/norm_modules.h"
 #include "engine/framework/modules/packed_linear_weights.h"
 #include "engine/framework/modules/positional_modules.h"
 #include "engine/framework/modules/structural_modules.h"
+#include "engine/framework/modules/weight_binding.h"
 
 #include <ggml-alloc.h>
 
@@ -36,12 +38,6 @@ constexpr double kPi = 3.14159265358979323846264338327950288;
 constexpr int64_t kTimestepFeatures = 256;
 constexpr int64_t kStgSelfAttentionBlock = 29;
 
-enum class ModulationMode {
-    Affine,
-    RmsAffine,
-    Scale,
-};
-
 struct GgmlContextDeleter {
     void operator()(ggml_context * ctx) const noexcept {
         if (ctx != nullptr) {
@@ -49,19 +45,6 @@ struct GgmlContextDeleter {
         }
     }
 };
-
-modules::LinearWeights load_linear(
-    core::BackendWeightStore & store,
-    const assets::TensorSource & source,
-    const std::string & prefix,
-    assets::TensorStorageType storage_type,
-    int64_t out_features,
-    int64_t in_features) {
-    return {
-        store.load_tensor(source, prefix + ".weight", storage_type, {out_features, in_features}),
-        store.load_tensor(source, prefix + ".bias", assets::TensorStorageType::F32, {out_features}),
-    };
-}
 
 modules::LinearWeights load_packed_self_qkv_gate_linear(
     core::BackendWeightStore & store,
@@ -109,21 +92,24 @@ DramaBoxAdaLayerNormWeights load_adaln(
     int64_t hidden,
     int64_t coefficient) {
     DramaBoxAdaLayerNormWeights weights;
-    weights.timestep_linear_1 = load_linear(
+    weights.timestep_linear_1 = modules::binding::linear_from_source(
         store,
         source,
         prefix + ".emb.timestep_embedder.linear_1",
         storage_type,
         hidden,
-        kTimestepFeatures);
-    weights.timestep_linear_2 = load_linear(
+        kTimestepFeatures,
+        true);
+    weights.timestep_linear_2 = modules::binding::linear_from_source(
         store,
         source,
         prefix + ".emb.timestep_embedder.linear_2",
         storage_type,
         hidden,
-        hidden);
-    weights.output_linear = load_linear(store, source, prefix + ".linear", storage_type, coefficient * hidden, hidden);
+        hidden,
+        true);
+    weights.output_linear = modules::binding::linear_from_source(
+        store, source, prefix + ".linear", storage_type, coefficient * hidden, hidden, true);
     weights.output_coefficient = coefficient;
     return weights;
 }
@@ -138,14 +124,14 @@ DramaBoxDitSelfAttentionWeights load_self_attention(
     DramaBoxPerfMode perf_mode) {
     DramaBoxDitSelfAttentionWeights weights;
     if (perf_mode == DramaBoxPerfMode::FlashAttention) {
-        weights.q = load_linear(store, source, prefix + ".to_q", storage_type, hidden, hidden);
-        weights.k = load_linear(store, source, prefix + ".to_k", storage_type, hidden, hidden);
-        weights.v = load_linear(store, source, prefix + ".to_v", storage_type, hidden, hidden);
-        weights.gate = load_linear(store, source, prefix + ".to_gate_logits", storage_type, heads, hidden);
+        weights.q = modules::binding::linear_from_source(store, source, prefix + ".to_q", storage_type, hidden, hidden, true);
+        weights.k = modules::binding::linear_from_source(store, source, prefix + ".to_k", storage_type, hidden, hidden, true);
+        weights.v = modules::binding::linear_from_source(store, source, prefix + ".to_v", storage_type, hidden, hidden, true);
+        weights.gate = modules::binding::linear_from_source(store, source, prefix + ".to_gate_logits", storage_type, heads, hidden, true);
     } else {
         weights.qkv_gate = load_packed_self_qkv_gate_linear(store, source, prefix, storage_type, hidden, heads);
     }
-    weights.out = load_linear(store, source, prefix + ".to_out.0", storage_type, hidden, hidden);
+    weights.out = modules::binding::linear_from_source(store, source, prefix + ".to_out.0", storage_type, hidden, hidden, true);
     weights.q_norm = store.load_tensor(source, prefix + ".q_norm.weight", assets::TensorStorageType::Native, {hidden});
     weights.k_norm = store.load_tensor(source, prefix + ".k_norm.weight", assets::TensorStorageType::Native, {hidden});
     return weights;
@@ -177,13 +163,13 @@ DramaBoxDitCrossAttentionWeights load_cross_attention(
         hidden,
         hidden,
         hidden);
-    weights.out = load_linear(store, source, prefix + ".to_out.0", storage_type, hidden, hidden);
+    weights.out = modules::binding::linear_from_source(store, source, prefix + ".to_out.0", storage_type, hidden, hidden, true);
     weights.q_norm = store.load_tensor(source, prefix + ".q_norm.weight", assets::TensorStorageType::Native, {hidden});
     weights.k_norm = store.load_tensor(source, prefix + ".k_norm.weight", assets::TensorStorageType::Native, {hidden});
     return weights;
 }
 
-DramaBoxDitBlockWeights load_block(
+DramaBoxDitBlockWeights load_dit_transformer_block(
     core::BackendWeightStore & store,
     const assets::TensorSource & source,
     int64_t index,
@@ -206,8 +192,10 @@ DramaBoxDitBlockWeights load_block(
         config.num_attention_heads,
         perf_mode);
     weights.cross_attention = load_cross_attention(store, source, prefix + ".audio_attn2", storage_type, hidden, config.num_attention_heads);
-    weights.ff_in = load_linear(store, source, prefix + ".audio_ff.net.0.proj", storage_type, hidden * 4, hidden);
-    weights.ff_out = load_linear(store, source, prefix + ".audio_ff.net.2", storage_type, hidden, hidden * 4);
+    weights.ff_in = modules::binding::linear_from_source(
+        store, source, prefix + ".audio_ff.net.0.proj", storage_type, hidden * 4, hidden, true);
+    weights.ff_out = modules::binding::linear_from_source(
+        store, source, prefix + ".audio_ff.net.2", storage_type, hidden, hidden * 4, true);
     return weights;
 }
 
@@ -217,17 +205,6 @@ core::TensorValue attention_heads(core::ModuleBuildContext & ctx, const core::Te
         core::ensure_backend_addressable_layout(ctx, input),
         core::TensorShape::from_dims({input.shape.dims[0], input.shape.dims[1], heads, dim}));
     return modules::TransposeModule({{0, 2, 1, 3}, reshaped.shape.rank}).build(ctx, reshaped);
-}
-
-core::TensorValue apply_split_rope_heads(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const core::TensorValue & cos,
-    const core::TensorValue & sin,
-    int64_t heads,
-    int64_t head_dim) {
-    auto x = attention_heads(ctx, input, heads, head_dim);
-    return modules::SplitRoPEModule({head_dim}).build(ctx, x, cos, sin);
 }
 
 core::TensorValue attention_core_heads(
@@ -303,32 +280,6 @@ core::TensorValue audio_self_attention_core(
     return modules::ConcatModule({1}).build(ctx, target, ref);
 }
 
-core::TensorValue audio_target_attention_with_raw_reference(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & q_heads,
-    const core::TensorValue & k_heads,
-    const core::TensorValue & v_heads,
-    const core::TensorValue & v,
-    int64_t heads,
-    int64_t head_dim,
-    int64_t ref_tokens) {
-    const int64_t total_tokens = q_heads.shape.dims[2];
-    const int64_t target_tokens = total_tokens - ref_tokens;
-    if (ref_tokens <= 0 || target_tokens <= 0) {
-        return audio_self_attention_core(ctx, q_heads, k_heads, v_heads, heads, head_dim, ref_tokens);
-    }
-    // Perf mode keeps target queries exact and skips the denoise-masked reference-query attention output.
-    auto target = attention_core_heads(
-        ctx,
-        modules::SliceModule({2, 0, target_tokens}).build(ctx, q_heads),
-        k_heads,
-        v_heads,
-        std::nullopt,
-        heads,
-        head_dim);
-    return modules::ConcatModule({1}).build(ctx, target, modules::SliceModule({1, target_tokens, ref_tokens}).build(ctx, v));
-}
-
 core::TensorValue apply_gate_and_out(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & x,
@@ -378,8 +329,7 @@ core::TensorValue self_attention(
             throw std::runtime_error("DramaBox DiT perf self-attention requires split Q/K/V/gate weights");
         }
         const int64_t total_tokens = x.shape.dims[1];
-        const int64_t target_tokens = ref_tokens > 0 ? total_tokens - ref_tokens : total_tokens;
-        if (target_tokens <= 0) {
+        if (total_tokens <= ref_tokens) {
             throw std::runtime_error("DramaBox DiT perf self-attention has no target tokens");
         }
         auto k = modules::LinearModule({
@@ -401,63 +351,43 @@ core::TensorValue self_attention(
             ggml_is_quantized(weights.gate->weight.tensor->type) ? GGML_PREC_DEFAULT : GGML_PREC_F32,
         }).build(ctx, x, *weights.gate);
         k = modules::RMSNormModule({hidden, kNormEps, true, false}).build(ctx, k, {weights.k_norm, std::nullopt});
-        auto k_heads = apply_split_rope_heads(ctx, k, rope_cos, rope_sin, heads, head_dim);
+        auto k_heads = modules::SplitRoPEAttentionModule({heads, head_dim}).build(ctx, k, rope_cos, rope_sin);
         auto v_heads = attention_heads(ctx, v, heads, head_dim);
         core::TensorValue attn;
         if (skip_last_perturbed_attention && x.shape.dims[0] >= 2) {
             const int64_t prefix_batch = x.shape.dims[0] - 1;
             auto prefix_x = modules::SliceModule({0, 0, prefix_batch}).build(ctx, x);
-            auto prefix_target_x = modules::SliceModule({1, 0, target_tokens}).build(ctx, prefix_x);
             auto prefix_q = modules::LinearModule({
                 hidden,
                 hidden,
                 true,
                 ggml_is_quantized(weights.q->weight.tensor->type) ? GGML_PREC_DEFAULT : GGML_PREC_F32,
-            }).build(ctx, prefix_target_x, *weights.q);
+            }).build(ctx, prefix_x, *weights.q);
             prefix_q = modules::RMSNormModule({hidden, kNormEps, true, false}).build(ctx, prefix_q, {weights.q_norm, std::nullopt});
-            auto prefix_q_heads = apply_split_rope_heads(
+            auto prefix_q_heads = modules::SplitRoPEAttentionModule({heads, head_dim}).build(
                 ctx,
                 prefix_q,
-                modules::SliceModule({2, 0, target_tokens}).build(ctx, modules::SliceModule({0, 0, prefix_batch}).build(ctx, rope_cos)),
-                modules::SliceModule({2, 0, target_tokens}).build(ctx, modules::SliceModule({0, 0, prefix_batch}).build(ctx, rope_sin)),
-                heads,
-                head_dim);
-            auto prefix_attn = attention_core_heads(
+                modules::SliceModule({0, 0, prefix_batch}).build(ctx, rope_cos),
+                modules::SliceModule({0, 0, prefix_batch}).build(ctx, rope_sin));
+            auto prefix_attn = audio_self_attention_core(
                 ctx,
                 prefix_q_heads,
                 modules::SliceModule({0, 0, prefix_batch}).build(ctx, k_heads),
                 modules::SliceModule({0, 0, prefix_batch}).build(ctx, v_heads),
-                std::nullopt,
                 heads,
-                head_dim);
-            if (ref_tokens > 0) {
-                auto prefix_v = modules::SliceModule({0, 0, prefix_batch}).build(ctx, v);
-                prefix_attn = modules::ConcatModule({1}).build(
-                    ctx,
-                    prefix_attn,
-                    modules::SliceModule({1, target_tokens, ref_tokens}).build(ctx, prefix_v));
-            }
+                head_dim,
+                ref_tokens);
             attn = modules::ConcatModule({0}).build(ctx, prefix_attn, modules::SliceModule({0, prefix_batch, 1}).build(ctx, v));
         } else {
-            auto target_x = modules::SliceModule({1, 0, target_tokens}).build(ctx, x);
             auto q = modules::LinearModule({
                 hidden,
                 hidden,
                 true,
                 ggml_is_quantized(weights.q->weight.tensor->type) ? GGML_PREC_DEFAULT : GGML_PREC_F32,
-            }).build(ctx, target_x, *weights.q);
+            }).build(ctx, x, *weights.q);
             q = modules::RMSNormModule({hidden, kNormEps, true, false}).build(ctx, q, {weights.q_norm, std::nullopt});
-            auto q_heads = apply_split_rope_heads(
-                ctx,
-                q,
-                modules::SliceModule({2, 0, target_tokens}).build(ctx, rope_cos),
-                modules::SliceModule({2, 0, target_tokens}).build(ctx, rope_sin),
-                heads,
-                head_dim);
-            attn = attention_core_heads(ctx, q_heads, k_heads, v_heads, std::nullopt, heads, head_dim);
-            if (ref_tokens > 0) {
-                attn = modules::ConcatModule({1}).build(ctx, attn, modules::SliceModule({1, target_tokens, ref_tokens}).build(ctx, v));
-            }
+            auto q_heads = modules::SplitRoPEAttentionModule({heads, head_dim}).build(ctx, q, rope_cos, rope_sin);
+            attn = audio_self_attention_core(ctx, q_heads, k_heads, v_heads, heads, head_dim, ref_tokens);
         }
         return apply_gate_and_out(ctx, x, attn, gates, weights.out, heads, head_dim, hidden);
     }
@@ -473,8 +403,8 @@ core::TensorValue self_attention(
     auto gates = modules::SliceModule({2, 3 * hidden, heads}).build(ctx, qkv_gate);
     q = modules::RMSNormModule({hidden, kNormEps, true, false}).build(ctx, q, {weights.q_norm, std::nullopt});
     k = modules::RMSNormModule({hidden, kNormEps, true, false}).build(ctx, k, {weights.k_norm, std::nullopt});
-    auto q_heads = apply_split_rope_heads(ctx, q, rope_cos, rope_sin, heads, head_dim);
-    auto k_heads = apply_split_rope_heads(ctx, k, rope_cos, rope_sin, heads, head_dim);
+    auto q_heads = modules::SplitRoPEAttentionModule({heads, head_dim}).build(ctx, q, rope_cos, rope_sin);
+    auto k_heads = modules::SplitRoPEAttentionModule({heads, head_dim}).build(ctx, k, rope_cos, rope_sin);
     core::TensorValue attn;
     if (skip_last_perturbed_attention && x.shape.dims[0] >= 2) {
         const int64_t prefix_batch = x.shape.dims[0] - 1;
@@ -482,15 +412,11 @@ core::TensorValue self_attention(
         auto prefix_k = modules::SliceModule({0, 0, prefix_batch}).build(ctx, k_heads);
         auto prefix_v = modules::SliceModule({0, 0, prefix_batch}).build(ctx, v);
         auto prefix_v_heads = attention_heads(ctx, prefix_v, heads, head_dim);
-        auto prefix_attn = perf_mode == DramaBoxPerfMode::FlashAttention
-            ? audio_target_attention_with_raw_reference(ctx, prefix_q, prefix_k, prefix_v_heads, prefix_v, heads, head_dim, ref_tokens)
-            : audio_self_attention_core(ctx, prefix_q, prefix_k, prefix_v_heads, heads, head_dim, ref_tokens);
+        auto prefix_attn = audio_self_attention_core(ctx, prefix_q, prefix_k, prefix_v_heads, heads, head_dim, ref_tokens);
         attn = modules::ConcatModule({0}).build(ctx, prefix_attn, modules::SliceModule({0, prefix_batch, 1}).build(ctx, v));
     } else {
         auto v_heads = attention_heads(ctx, v, heads, head_dim);
-        attn = perf_mode == DramaBoxPerfMode::FlashAttention
-            ? audio_target_attention_with_raw_reference(ctx, q_heads, k_heads, v_heads, v, heads, head_dim, ref_tokens)
-            : audio_self_attention_core(ctx, q_heads, k_heads, v_heads, heads, head_dim, ref_tokens);
+        attn = audio_self_attention_core(ctx, q_heads, k_heads, v_heads, heads, head_dim, ref_tokens);
     }
     return apply_gate_and_out(ctx, x, attn, gates, weights.out, heads, head_dim, hidden);
 }
@@ -574,62 +500,6 @@ AdaOutputs adaln(
     return {output, embedded};
 }
 
-core::TensorValue ff(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & x,
-    const DramaBoxDitBlockWeights & weights,
-    const DramaBoxTransformerConfig & config) {
-    return modules::FeedForwardGeluModule({
-        config.hidden_size,
-        config.hidden_size * 4,
-        true,
-    }).build(ctx, x, {
-        weights.ff_in.weight,
-        weights.ff_in.bias,
-        weights.ff_out.weight,
-        weights.ff_out.bias,
-    });
-}
-
-core::TensorValue ada_slice(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & table,
-    const core::TensorValue & timestep,
-    int64_t index,
-    int64_t hidden,
-    const core::TensorShape &) {
-    auto one = modules::SliceModule({2, index * hidden, hidden}).build(ctx, timestep);
-    auto table_one = modules::SliceModule({0, index, 1}).build(ctx, table);
-    table_one = core::reshape_tensor(ctx, table_one, core::TensorShape::from_dims({1, 1, hidden}));
-    return core::wrap_tensor(ggml_add(ctx.ggml, one.tensor, table_one.tensor), one.shape, GGML_TYPE_F32);
-}
-
-core::TensorValue modulate_from_table(
-    core::ModuleBuildContext & ctx,
-    const core::TensorValue & input,
-    const core::TensorValue & modulation,
-    const core::TensorValue & table,
-    int64_t shift_index,
-    int64_t scale_index,
-    int64_t hidden,
-    ModulationMode mode) {
-    if (mode == ModulationMode::Scale) {
-        auto scale = ada_slice(ctx, table, modulation, scale_index, hidden, input.shape);
-        return core::wrap_tensor(ggml_mul(ctx.ggml, input.tensor, scale.tensor), input.shape, GGML_TYPE_F32);
-    }
-    auto x = mode == ModulationMode::RmsAffine
-        ? modules::RMSNormModule({hidden, kNormEps, false, false}).build(ctx, input, {})
-        : input;
-    auto shift = ada_slice(ctx, table, modulation, shift_index, hidden, input.shape);
-    auto scale = ada_slice(ctx, table, modulation, scale_index, hidden, input.shape);
-    auto one_plus_scale = core::wrap_tensor(
-        ggml_scale_bias(ctx.ggml, scale.tensor, 1.0F, 1.0F),
-        scale.shape,
-        GGML_TYPE_F32);
-    auto scaled = core::wrap_tensor(ggml_mul(ctx.ggml, x.tensor, one_plus_scale.tensor), x.shape, GGML_TYPE_F32);
-    return core::wrap_tensor(ggml_add(ctx.ggml, scaled.tensor, shift.tensor), scaled.shape, GGML_TYPE_F32);
-}
-
 core::TensorValue build_block(
     core::ModuleBuildContext & ctx,
     const core::TensorValue & input,
@@ -645,7 +515,8 @@ core::TensorValue build_block(
     bool share_last_context,
     DramaBoxPerfMode perf_mode) {
     const int64_t hidden = config.hidden_size;
-    auto norm = modulate_from_table(ctx, input, timestep, weights.audio_scale_shift_table, 0, 1, hidden, ModulationMode::RmsAffine);
+    auto norm = modules::AdaptiveLayerNormModule({hidden, kNormEps, modules::AdaptiveLayerNormMode::RmsAffine, 0, 1})
+        .build(ctx, input, timestep, {weights.audio_scale_shift_table});
     auto self = self_attention(
         ctx,
         norm,
@@ -656,33 +527,29 @@ core::TensorValue build_block(
         config,
         block_index == kStgSelfAttentionBlock && share_last_context,
         perf_mode);
-    auto self_modulated = modulate_from_table(ctx, self, timestep, weights.audio_scale_shift_table, -1, 2, hidden, ModulationMode::Scale);
+    auto self_modulated = modules::AdaptiveLayerNormModule({hidden, kNormEps, modules::AdaptiveLayerNormMode::Scale, -1, 2})
+        .build(ctx, self, timestep, {weights.audio_scale_shift_table});
     auto x = core::wrap_tensor(ggml_add(ctx.ggml, input.tensor, self_modulated.tensor), input.shape, GGML_TYPE_F32);
 
-    auto q_in = modulate_from_table(ctx, x, timestep, weights.audio_scale_shift_table, 6, 7, hidden, ModulationMode::RmsAffine);
-    auto kv = modulate_from_table(
-        ctx,
-        context,
-        prompt_timestep,
-        weights.audio_prompt_scale_shift_table,
-        0,
-        1,
-        hidden,
-        ModulationMode::Affine);
+    auto q_in = modules::AdaptiveLayerNormModule({hidden, kNormEps, modules::AdaptiveLayerNormMode::RmsAffine, 6, 7})
+        .build(ctx, x, timestep, {weights.audio_scale_shift_table});
+    auto kv = modules::AdaptiveLayerNormModule({hidden, kNormEps, modules::AdaptiveLayerNormMode::Affine, 0, 1})
+        .build(ctx, context, prompt_timestep, {weights.audio_prompt_scale_shift_table});
     auto cross = cross_attention(ctx, q_in, kv, weights.cross_attention, config, share_last_context);
-    auto cross_modulated = modulate_from_table(ctx, cross, timestep, weights.audio_scale_shift_table, -1, 8, hidden, ModulationMode::Scale);
+    auto cross_modulated = modules::AdaptiveLayerNormModule({hidden, kNormEps, modules::AdaptiveLayerNormMode::Scale, -1, 8})
+        .build(ctx, cross, timestep, {weights.audio_scale_shift_table});
     x = core::wrap_tensor(ggml_add(ctx.ggml, x.tensor, cross_modulated.tensor), x.shape, GGML_TYPE_F32);
 
-    auto ff_in = modulate_from_table(ctx, x, timestep, weights.audio_scale_shift_table, 3, 4, hidden, ModulationMode::RmsAffine);
-    auto ff_modulated = modulate_from_table(
-        ctx,
-        ff(ctx, ff_in, weights, config),
-        timestep,
-        weights.audio_scale_shift_table,
-        -1,
-        5,
-        hidden,
-        ModulationMode::Scale);
+    auto ff_in = modules::AdaptiveLayerNormModule({hidden, kNormEps, modules::AdaptiveLayerNormMode::RmsAffine, 3, 4})
+        .build(ctx, x, timestep, {weights.audio_scale_shift_table});
+    auto ff = modules::FeedForwardGeluModule({hidden, hidden * 4, true}).build(ctx, ff_in, {
+        weights.ff_in.weight,
+        weights.ff_in.bias,
+        weights.ff_out.weight,
+        weights.ff_out.bias,
+    });
+    auto ff_modulated = modules::AdaptiveLayerNormModule({hidden, kNormEps, modules::AdaptiveLayerNormMode::Scale, -1, 5})
+        .build(ctx, ff, timestep, {weights.audio_scale_shift_table});
     x = core::wrap_tensor(ggml_add(ctx.ggml, x.tensor, ff_modulated.tensor), x.shape, GGML_TYPE_F32);
     return x;
 }
@@ -790,13 +657,14 @@ DramaBoxDitWeights load_dramabox_dit_weights(
         backend_type,
         "dramabox.dit.weights",
         weight_context_bytes == 0 ? kDitWeightContextBytes : weight_context_bytes);
-    weights.patchify_proj = load_linear(
+    weights.patchify_proj = modules::binding::linear_from_source(
         *weights.store,
         source,
         "model.diffusion_model.audio_patchify_proj",
         weight_storage_type,
         config.hidden_size,
-        config.in_channels);
+        config.in_channels,
+        true);
     weights.adaln = load_adaln(
         *weights.store,
         source,
@@ -813,17 +681,18 @@ DramaBoxDitWeights load_dramabox_dit_weights(
         2);
     weights.blocks.reserve(static_cast<size_t>(config.num_layers));
     for (int64_t i = 0; i < config.num_layers; ++i) {
-        weights.blocks.push_back(load_block(*weights.store, source, i, config, weight_storage_type, perf_mode));
+        weights.blocks.push_back(load_dit_transformer_block(*weights.store, source, i, config, weight_storage_type, perf_mode));
     }
     weights.output_scale_shift_table =
         weights.store->load_tensor(source, "model.diffusion_model.audio_scale_shift_table", assets::TensorStorageType::F32, {2, config.hidden_size});
-    weights.output_proj = load_linear(
+    weights.output_proj = modules::binding::linear_from_source(
         *weights.store,
         source,
         "model.diffusion_model.audio_proj_out",
         weight_storage_type,
         config.out_channels,
-        config.hidden_size);
+        config.hidden_size,
+        true);
     weights.store->upload();
     return weights;
 }
@@ -880,7 +749,8 @@ public:
     void prepare_static_inputs(
         const DramaBoxConditioningEncoding & conditioning,
         const std::vector<float> & rope_cos,
-        const std::vector<float> & rope_sin) const {
+        const std::vector<float> & rope_sin,
+        const std::vector<float> & timestep_mask) const {
         if (conditioning.batch != batch_ ||
             conditioning.tokens != context_tokens_ ||
             conditioning.hidden_size != assets_->config.transformer.hidden_size) {
@@ -890,10 +760,21 @@ public:
             static_cast<int64_t>(rope_sin.size()) != rope_sin_.shape.num_elements()) {
             throw std::runtime_error("DramaBox DiT static RoPE shape mismatch");
         }
+        if (static_cast<int64_t>(timestep_mask.size()) != timestep_mask_.shape.num_elements()) {
+            throw std::runtime_error("DramaBox DiT timestep mask shape mismatch");
+        }
+        for (const float value : timestep_mask) {
+            if (value != 0.0F && value != 1.0F) {
+                throw std::runtime_error("DramaBox DiT graph timestep mask supports only binary denoise masks");
+            }
+        }
+        const std::vector<float> zero_timestep_features = make_dramabox_timestep_features({0.0F});
         const auto input_start = Clock::now();
         core::write_tensor_f32(context_, conditioning.features);
         core::write_tensor_f32(rope_cos_, rope_cos);
         core::write_tensor_f32(rope_sin_, rope_sin);
+        core::write_tensor_f32(timestep_mask_, timestep_mask);
+        core::write_tensor_f32(zero_timestep_features_, zero_timestep_features);
         static_inputs_ready_ = true;
         debug::timing_log_scalar("dramabox.dit.static_input_upload_ms", debug::elapsed_ms(input_start, Clock::now()));
     }
@@ -912,16 +793,12 @@ public:
         if (!static_inputs_ready_) {
             throw std::runtime_error("DramaBox DiT static inputs were not prepared");
         }
-        if (inputs.latent == nullptr || inputs.timestep_features == nullptr || inputs.sigma_features == nullptr) {
+        if (inputs.latent == nullptr || inputs.sigma_features == nullptr) {
             throw std::runtime_error("DramaBox DiT inputs are not bound");
         }
-        const auto & config = assets_->config;
-        const auto input_start = Clock::now();
         core::write_tensor_f32(latent_, *inputs.latent);
-        core::write_tensor_f32(timestep_features_, *inputs.timestep_features);
         core::write_tensor_f32(sigma_features_, *inputs.sigma_features);
         core::set_backend_threads(backend_, threads_);
-        debug::timing_log_scalar("dramabox.dit.input_upload_ms", debug::elapsed_ms(input_start, Clock::now()));
         const auto compute_start = Clock::now();
         const ggml_status status = core::compute_backend_graph(backend_, graph_, nullptr, "dramabox.dit");
         if (status != GGML_STATUS_SUCCESS) {
@@ -929,10 +806,7 @@ public:
         }
         ggml_backend_synchronize(backend_);
         debug::timing_log_scalar("dramabox.dit.graph.compute_ms", debug::elapsed_ms(compute_start, Clock::now()));
-        const auto output_start = Clock::now();
         auto out = core::read_tensor_f32(output_);
-        debug::timing_log_scalar("dramabox.dit.output_read_ms", debug::elapsed_ms(output_start, Clock::now()));
-        (void)config;
         return out;
     }
 
@@ -951,13 +825,17 @@ private:
             ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32, config.transformer.in_channels, tokens_, 1),
             core::TensorShape::from_dims({1, tokens_, config.transformer.in_channels}),
             GGML_TYPE_F32);
-        timestep_features_ = core::wrap_tensor(
-            ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32, kTimestepFeatures, tokens_, 1),
-            core::TensorShape::from_dims({1, tokens_, kTimestepFeatures}),
-            GGML_TYPE_F32);
         sigma_features_ = core::wrap_tensor(
             ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32, kTimestepFeatures, 1, 1),
             core::TensorShape::from_dims({1, 1, kTimestepFeatures}),
+            GGML_TYPE_F32);
+        zero_timestep_features_ = core::wrap_tensor(
+            ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32, kTimestepFeatures, 1, 1),
+            core::TensorShape::from_dims({1, 1, kTimestepFeatures}),
+            GGML_TYPE_F32);
+        timestep_mask_ = core::wrap_tensor(
+            ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32, 1, tokens_, 1),
+            core::TensorShape::from_dims({1, tokens_, 1}),
             GGML_TYPE_F32);
         context_ = core::wrap_tensor(
             ggml_new_tensor_3d(ctx_.get(), GGML_TYPE_F32, hidden, context_tokens_, batch_),
@@ -972,11 +850,14 @@ private:
             core::TensorShape::from_dims({batch_, heads, tokens_, hidden / (2 * heads)}),
             GGML_TYPE_F32);
         ggml_set_input(latent_.tensor);
-        ggml_set_input(timestep_features_.tensor);
         ggml_set_input(sigma_features_.tensor);
+        ggml_set_input(zero_timestep_features_.tensor);
+        ggml_set_input(timestep_mask_.tensor);
         ggml_set_input(context_.tensor);
         ggml_set_input(rope_cos_.tensor);
         ggml_set_input(rope_sin_.tensor);
+        ggml_set_output(zero_timestep_features_.tensor);
+        ggml_set_output(timestep_mask_.tensor);
         ggml_set_output(context_.tensor);
         ggml_set_output(rope_cos_.tensor);
         ggml_set_output(rope_sin_.tensor);
@@ -990,7 +871,27 @@ private:
         if (batch_ > 1) {
             x = modules::RepeatModule({core::TensorShape::from_dims({batch_, tokens_, hidden})}).build(build_ctx, x);
         }
-        auto timestep_outputs_one = adaln(build_ctx, timestep_features_, weights_.adaln, hidden);
+        const auto token_timestep_shape = core::TensorShape::from_dims({1, tokens_, kTimestepFeatures});
+        const auto sigma_token_features = modules::RepeatModule({token_timestep_shape}).build(build_ctx, sigma_features_);
+        const auto zero_token_features = modules::RepeatModule({token_timestep_shape}).build(build_ctx, zero_timestep_features_);
+        const auto timestep_mask_features = modules::RepeatModule({token_timestep_shape}).build(build_ctx, timestep_mask_);
+        const auto inverse_mask = core::wrap_tensor(
+            ggml_scale_bias(build_ctx.ggml, timestep_mask_features.tensor, -1.0F, 1.0F),
+            timestep_mask_features.shape,
+            GGML_TYPE_F32);
+        const auto masked_sigma = core::wrap_tensor(
+            ggml_mul(build_ctx.ggml, sigma_token_features.tensor, timestep_mask_features.tensor),
+            token_timestep_shape,
+            GGML_TYPE_F32);
+        const auto masked_zero = core::wrap_tensor(
+            ggml_mul(build_ctx.ggml, zero_token_features.tensor, inverse_mask.tensor),
+            token_timestep_shape,
+            GGML_TYPE_F32);
+        auto timestep_features = core::wrap_tensor(
+            ggml_add(build_ctx.ggml, masked_sigma.tensor, masked_zero.tensor),
+            token_timestep_shape,
+            GGML_TYPE_F32);
+        auto timestep_outputs_one = adaln(build_ctx, timestep_features, weights_.adaln, hidden);
         auto prompt_timestep_outputs_one = adaln(build_ctx, sigma_features_, weights_.prompt_adaln, hidden);
         AdaOutputs timestep_outputs{
             timestep_outputs_one.modulation,
@@ -1090,7 +991,7 @@ private:
         graph_ = ggml_new_graph_custom(ctx_.get(), kDitGraphNodeCapacity, false);
         ggml_build_forward_expand(graph_, output_);
         debug::timing_log_scalar("dramabox.dit.graph.expand_ms", debug::elapsed_ms(expand_start, Clock::now()));
-        debug::timing_log_scalar("dramabox.dit.graph.nodes", static_cast<double>(ggml_graph_n_nodes(graph_)));
+        debug::trace_log_scalar("dramabox.dit.graph.nodes", static_cast<int64_t>(ggml_graph_n_nodes(graph_)));
         const auto alloc_start = Clock::now();
         gallocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
         if (gallocr_ == nullptr ||
@@ -1116,8 +1017,9 @@ private:
     mutable bool static_inputs_ready_ = false;
     std::unique_ptr<ggml_context, GgmlContextDeleter> ctx_;
     core::TensorValue latent_;
-    core::TensorValue timestep_features_;
     core::TensorValue sigma_features_;
+    core::TensorValue zero_timestep_features_;
+    core::TensorValue timestep_mask_;
     core::TensorValue context_;
     core::TensorValue rope_cos_;
     core::TensorValue rope_sin_;
@@ -1184,14 +1086,15 @@ void DramaBoxDitRuntime::prepare_static_inputs(
     int64_t ref_tokens,
     const DramaBoxConditioningEncoding & conditioning,
     const std::vector<float> & rope_cos,
-    const std::vector<float> & rope_sin) const {
+    const std::vector<float> & rope_sin,
+    const std::vector<float> & timestep_mask) const {
     prepare(
         batch,
         tokens,
         conditioning.tokens,
         stg_enabled,
         ref_tokens);
-    graph_->prepare_static_inputs(conditioning, rope_cos, rope_sin);
+    graph_->prepare_static_inputs(conditioning, rope_cos, rope_sin, timestep_mask);
 }
 
 std::vector<float> DramaBoxDitRuntime::forward(const DramaBoxDitInputs & inputs) const {
@@ -1199,6 +1102,11 @@ std::vector<float> DramaBoxDitRuntime::forward(const DramaBoxDitInputs & inputs)
         throw std::runtime_error("DramaBox DiT graph was not prepared");
     }
     return graph_->forward(inputs);
+}
+
+void DramaBoxDitRuntime::release_runtime_state() const {
+    graph_.reset();
+    weights_.reset();
 }
 
 }  // namespace engine::models::dramabox

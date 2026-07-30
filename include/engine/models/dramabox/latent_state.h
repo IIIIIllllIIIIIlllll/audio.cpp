@@ -50,12 +50,6 @@ void append_reference_latents(
     DramaBoxLatentState & state,
     const DramaBoxEncodedReferenceLatents & ref,
     const DramaBoxConfig & config);
-void fill_token_timestep_features(
-    const DramaBoxLatentState & state,
-    float scaled_sigma,
-    const std::vector<float> & sigma_features,
-    const std::vector<float> & zero_features,
-    std::vector<float> & features);
 void guided_prediction_from_velocity(
     const std::vector<float> & velocity,
     const DramaBoxLatentState & state,
