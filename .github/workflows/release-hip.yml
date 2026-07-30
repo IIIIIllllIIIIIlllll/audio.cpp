@@ -168,6 +168,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -180,5 +183,6 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           name: ${{ inputs.tag }} (Windows HIP)
+          body_path: .github/release-hip-notes.md
           prerelease: ${{ inputs.prerelease }}
           files: dist/*.zip
