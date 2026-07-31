@@ -30,24 +30,43 @@ key out of the active spec until cutover. Avoid creating UI-only aliases.
 
 Top-level fields:
 
-| Field | Meaning |
-|---|---|
-| `schema_version` | Must be `1`. |
-| `family` | Runtime model family id. Must match the filename stem. |
-| `display_name` | User-facing model family name. |
-| `category` | Typed category such as `asr`, `tts`, `audio_generation`, or `community`. |
-| `status` | Typed status: `supported`, `community`, `experimental`, `wip`, or `unsupported`. |
-| `tasks` | Typed task tags such as `asr`, `tts`, `clone`, `vc`, or `align`. |
-| `modes` | Supported run modes: `offline` and/or `streaming`. |
-| `languages` | Family-level language scope, such as `en`, `zh`, `ja`, `multilingual`, or `language_agnostic`. |
-| `runtime` | Runtime tags such as `gguf` or `stream`. |
-| `capabilities` | Stable task-keyed capability tags. |
-| `options` | Typed request/session/load options. |
-| `package_defaults` | Optional shared package metadata, such as a common download source. |
-| `packages` | Installable model packages and download metadata. |
-| `dependencies` | Runtime peer models or bundled model assets needed for optional features. |
-| `ui` | UI/catalog hints. |
-| `sources` | Canonical runtime resource/tensor mappings. |
+| Field | Meaning | Regenerate standalone GGUF if touched? |
+|---|---|---|
+| `schema_version` | Must be `1`. | No |
+| `family` | Runtime model family id. Must match the filename stem. | Yes, if changing an already published family id |
+| `display_name` | User-facing model family name. | No |
+| `category` | Typed category such as `asr`, `tts`, `audio_generation`, or `community`. | No |
+| `status` | Typed status: `supported`, `community`, `experimental`, `wip`, or `unsupported`. | No |
+| `tasks` | Typed task tags such as `asr`, `tts`, `clone`, `vc`, or `align`. | No |
+| `modes` | Supported run modes: `offline` and/or `streaming`. | No |
+| `languages` | Family-level language scope, such as `en`, `zh`, `ja`, `multilingual`, or `language_agnostic`. | No |
+| `runtime` | Runtime tags such as `gguf` or `stream`. | No |
+| `capabilities` | Stable task-keyed capability tags. | No |
+| `options` | Typed request/session/load options. | Yes, otherwise new code needs compatibility mapping for old embedded specs |
+| `package_defaults` | Optional shared package metadata, such as a common download source. | No |
+| `packages` | Installable model packages and download metadata. | No |
+| `dependencies` | Runtime peer models or bundled model assets needed for optional features. | No, but loader/session behavior must support the dependency |
+| `ui` | UI/catalog hints. | No |
+| `sources` | Canonical runtime resource/tensor mappings. | Yes |
+
+## Metadata vs Runtime Loading
+
+The metadata fields above do not change tensor loading, sidecar lookup, graph
+construction, or inference math.
+
+Changing those fields does not require regenerating or reconverting a GGUF model.
+If a GGUF already embeds an older spec, the old embedded metadata may still be
+what a fully standalone package reports when no external `model_specs/` override
+is available, but the model weights and runtime execution remain valid.
+
+Fields that can affect runtime behavior are `sources`, `options`, and
+`dependencies`. Changing `sources` changes where files or tensors are resolved
+and requires refreshing any standalone GGUF package that relies on the embedded
+spec. Changing `options` changes the typed runtime contract; either regenerate
+standalone GGUF packages with the updated embedded spec, or add explicit
+compatibility mapping in code for packages that still carry the old spec.
+Changing `dependencies` must be reviewed with the loader/session behavior that
+consumes it.
 
 Shared request options must use canonical names such as `seed`, `language`,
 `voice_ref`, `text_chunk_mode`, `text_chunk_size`, `max_tokens`,
@@ -213,10 +232,9 @@ the referenced scope. Multiple `required_when` rows use OR semantics.
 }
 ```
 
-Supported download kinds are `huggingface_snapshot`, `local_snapshot`,
-`converter`, and `unsupported`. `tools/model_manager_v2.py` intentionally
-installs only simple `huggingface_snapshot` packages; use the legacy manager for
-composite or converter-driven installs.
+Release download packages should use ready-to-run `huggingface_snapshot` GGUF
+entries. Publish a GGUF package first, then expose it through
+`tools/model_manager_v2.py`.
 
 The C++ `framework/model_spec` subsystem is the authoritative schema gate.
 `audiocpp_cli`, `audiocpp_server`, and GGUF loading fail when a typed schema field

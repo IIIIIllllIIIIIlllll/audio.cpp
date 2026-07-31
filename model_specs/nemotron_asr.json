@@ -1,5 +1,77 @@
 {
   "family": "nemotron_asr",
+  "display_name": "Nemotron 3.5 ASR",
+  "description": "NVIDIA 600M streaming ASR model for low-latency and batch transcription across 40 language-locales, with native punctuation, capitalization, automatic language detection, and configurable chunk sizes.",
+  "category": "asr",
+  "status": "supported",
+  "tasks": [
+    "asr"
+  ],
+  "modes": [
+    "offline",
+    "streaming"
+  ],
+  "languages": [
+    "ar-AR",
+    "bg-BG",
+    "cs-CZ",
+    "da-DK",
+    "de-DE",
+    "el-GR",
+    "en-GB",
+    "en-US",
+    "es-ES",
+    "es-US",
+    "et-EE",
+    "fi-FI",
+    "fr-CA",
+    "fr-FR",
+    "he-IL",
+    "hi-IN",
+    "hr-HR",
+    "hu-HU",
+    "it-IT",
+    "ja-JP",
+    "ko-KR",
+    "lt-LT",
+    "lv-LV",
+    "mt-MT",
+    "nb-NO",
+    "nl-NL",
+    "nn-NO",
+    "pl-PL",
+    "pt-BR",
+    "pt-PT",
+    "ro-RO",
+    "ru-RU",
+    "sk-SK",
+    "sl-SI",
+    "sv-SE",
+    "th-TH",
+    "tr-TR",
+    "uk-UA",
+    "vi-VN",
+    "zh-CN"
+  ],
+  "capabilities": {},
+  "runtime": {
+    "tags": [
+      "gguf",
+      "stream"
+    ]
+  },
+  "ui": {
+    "recommended_package": "nemotron_asr_q8_0",
+    "tags": [
+      "ASR",
+      "GGUF",
+      "Stream"
+    ],
+    "docs": [
+      "docs/asr.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

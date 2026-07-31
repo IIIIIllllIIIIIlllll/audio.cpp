@@ -21,6 +21,7 @@ RvcVoiceModel make_voice(
     out.version = std::move(version);
     out.sample_rate = sample_rate;
     out.checkpoint = resources.open_tensor_source(checkpoint_id);
+    out.synthesizer_layout = infer_rvc_synthesizer_layout(*out.checkpoint, out.sample_rate, out.id);
     out.index_path = resources.require_file(index_id);
     out.index_vectors = resources.open_tensor_source(index_vectors_id);
     out.has_f0 = false;

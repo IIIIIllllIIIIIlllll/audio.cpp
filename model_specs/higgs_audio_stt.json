@@ -1,5 +1,38 @@
 {
   "family": "higgs_audio_stt",
+  "display_name": "Higgs Audio v3 STT",
+  "description": "Boson AI English speech-to-text model combining a Whisper Large v3 speech encoder with a Qwen decoder for robust ASR.",
+  "category": "asr",
+  "status": "supported",
+  "tasks": [
+    "asr"
+  ],
+  "modes": [
+    "offline",
+    "streaming"
+  ],
+  "languages": [
+    "en"
+  ],
+  "capabilities": {},
+  "runtime": {
+    "tags": [
+      "gguf",
+      "stream"
+    ]
+  },
+  "ui": {
+    "recommended_package": "higgs_audio_stt_q8_0",
+    "tags": [
+      "ASR",
+      "GGUF",
+      "Stream"
+    ],
+    "docs": [
+      "docs/asr.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

@@ -1,5 +1,41 @@
 {
   "family": "vibevoice",
+  "display_name": "VibeVoice",
+  "description": "Microsoft long-form multi-speaker TTS model for expressive conversational audio such as podcasts, supporting up to 90 minutes of speech with as many as four speakers.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "en",
+    "zh"
+  ],
+  "capabilities": {
+    "tts": [
+      "multi_speaker",
+      "long_form"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "vibevoice_1_5b_q8_0",
+    "tags": [
+      "TTS",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

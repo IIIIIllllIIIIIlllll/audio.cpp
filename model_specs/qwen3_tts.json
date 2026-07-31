@@ -1,5 +1,56 @@
 {
   "family": "qwen3_tts",
+  "display_name": "Qwen3-TTS",
+  "description": "Qwen TTS family for controllable 10-language speech synthesis, including 3-second voice cloning, CustomVoice instruction control over preset timbres, and VoiceDesign from natural-language descriptions.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone",
+    "design"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "zh",
+    "en",
+    "ja",
+    "ko",
+    "de",
+    "fr",
+    "ru",
+    "pt",
+    "es",
+    "it"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ],
+    "design": [
+      "voice_design"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "qwen3_tts_1_7b_base_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "Design",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/qwen3.md",
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

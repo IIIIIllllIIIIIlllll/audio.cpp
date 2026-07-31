@@ -1,5 +1,60 @@
 {
   "family": "moss_tts_nano",
+  "display_name": "MOSS-TTS-Nano",
+  "description": "Compact deployment-first MOSS-TTS model for real-time multilingual speech generation, lightweight integration, and zero-shot voice cloning.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "ar",
+    "cs",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "fa",
+    "fr",
+    "hu",
+    "it",
+    "ja",
+    "ko",
+    "pl",
+    "pt",
+    "ru",
+    "sv",
+    "tr",
+    "zh"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "moss_tts_nano_100m_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/moss_tts.md",
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

@@ -13,14 +13,12 @@ audiocpp_cli --task <task> --family vevo2 --model models/Vevo2 --backend cuda --
 Two packages produce a runnable VeVo2, and either directory can be passed as `--model`:
 
 ```bash
-python3 tools/model_manager.py install vevo2_gguf   # models/Vevo2-GGUF, Q8_0, ~3.2 GB
-python3 tools/model_manager.py install vevo2        # models/Vevo2, safetensors
+python3 tools/model_manager_v2.py install vevo2_q8_0   # models/Vevo2-GGUF, Q8_0, ~3.2 GB
+python3 tools/model_manager_v2.py install vevo2_orig   # models/Vevo2-GGUF, original dtype
 ```
 
-`vevo2_gguf` is self-contained: the GGUF embeds every config the runtime reads, including
+The GGUF package is self-contained: it embeds every config the runtime reads, including
 `whisper-medium/config.json` and the whisper encoder weights, so nothing else has to be downloaded.
-The safetensors package instead installs a sibling `models/whisper-medium` directory, which the
-spec's safetensors source resolves as `../whisper-medium` relative to the model directory.
 
 ## Model
 

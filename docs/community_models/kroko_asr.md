@@ -57,7 +57,7 @@ The model manager infers a language/size-specific target such as
 another:
 
 ```powershell
-python .\tools\model_manager.py install kroko_asr_community_converted `
+python .\tools\model_manager_deprecated.py install kroko_asr_community_converted `
   --source-file .\models\Kroko-ASR\Kroko-DE-Community-64-L-Streaming-001.data `
   --models-root .\models\Kroko-ASR `
   --overwrite

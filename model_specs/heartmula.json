@@ -1,5 +1,39 @@
 {
   "family": "heartmula",
+  "display_name": "HeartMuLa",
+  "description": "Open-source music foundation model for generating complete songs from text, lyric prompts, and style tags, with controllable song structure and broad multilingual lyric conditioning.",
+  "category": "audio_generation",
+  "status": "supported",
+  "tasks": [
+    "music"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "multilingual"
+  ],
+  "capabilities": {
+    "music": [
+      "lyrics"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "heartmula_q8_0",
+    "tags": [
+      "Music",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

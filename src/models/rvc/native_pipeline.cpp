@@ -432,6 +432,7 @@ RvcSynthesizerInput make_synthesizer_input(
     const std::vector<float> & f0,
     const RvcInferenceConfig & config,
     int sample_rate,
+    int64_t hop_samples,
     int64_t target_frames,
     bool has_f0) {
     if (content.frames <= 0 || content.dim <= 0 || content.values.empty()) {
@@ -489,7 +490,7 @@ RvcSynthesizerInput make_synthesizer_input(
             }
         }
     }
-    constexpr int64_t upsample = 400;
+    const int64_t upsample = hop_samples;
     std::vector<float> cumulative(static_cast<size_t>(frames), 0.0F);
     double running = 0.0;
     for (int64_t t = 0; t < frames; ++t) {
@@ -649,6 +650,7 @@ runtime::AudioBuffer RvcNativePipeline::infer(
                 state_->backend,
                 state_->storage_type,
                 voice.sample_rate,
+                voice.synthesizer_layout,
                 voice.version == "v1",
                 voice.has_f0)).first;
     }
@@ -741,6 +743,7 @@ runtime::AudioBuffer RvcNativePipeline::infer(
             segment_f0,
             synth_config,
             voice.sample_rate,
+            voice.synthesizer_layout.hop_samples,
             target_frames,
             voice.has_f0);
         engine::debug::trace_log_f32(
@@ -758,7 +761,7 @@ runtime::AudioBuffer RvcNativePipeline::infer(
                 synth_input.pitchf);
             engine::debug::trace_log_f32(
                 "rvc.synth.sine_source",
-                {1, synth_input.frames * 400, 1},
+                {1, synth_input.frames * voice.synthesizer_layout.hop_samples, 1},
                 synth_input.sine_source);
         }
         auto synth_output = synth_it->second->infer(synth_input);

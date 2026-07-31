@@ -98,7 +98,7 @@ Install the conversion and reference dependencies:
 Convert one free package through the model manager:
 
 ```powershell
-.\venv\Scripts\python.exe tools\model_manager.py install `
+.\venv\Scripts\python.exe tools\model_manager_deprecated.py install `
   kroko_asr_community_converted `
   --source-file ..\models\Kroko-ASR\Kroko-DE-Community-64-L-Streaming-001.data `
   --models-root ..\models\Kroko-ASR --overwrite

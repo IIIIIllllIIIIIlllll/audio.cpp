@@ -812,6 +812,52 @@ open_rvc_voice_checkpoint(const std::filesystem::path & checkpoint_path, std::st
 
 }  // namespace
 
+RvcSynthesizerLayout infer_rvc_synthesizer_layout(
+    const engine::assets::TensorSource & source,
+    int sample_rate,
+    const std::string & source_label) {
+    RvcSynthesizerLayout layout;
+    if (sample_rate == 32000) {
+        layout.upsample_rates = {10, 8, 2, 2};
+    } else if (sample_rate == 40000) {
+        layout.upsample_rates = {10, 10, 2, 2};
+    } else if (sample_rate == 48000) {
+        layout.upsample_rates = {12, 10, 2, 2};
+    } else {
+        throw std::runtime_error("RVC voice checkpoint has unsupported synthesizer sample rate: " + source_label);
+    }
+    layout.hop_samples = 1;
+    for (const auto rate : layout.upsample_rates) {
+        layout.hop_samples *= rate;
+    }
+    if (layout.hop_samples != sample_rate / 100 || sample_rate % 100 != 0) {
+        throw std::runtime_error("RVC voice checkpoint sample rate does not match a 10 ms synthesizer hop: " +
+                                 source_label);
+    }
+    constexpr int64_t channels[4] = {256, 128, 64, 32};
+    constexpr int64_t in_channels[4] = {512, 256, 128, 64};
+    for (int64_t up = 0; up < 4; ++up) {
+        auto name = "dec.ups." + std::to_string(up) + ".weight";
+        if (!source.has_tensor(name)) {
+            name = "dec.ups." + std::to_string(up) + ".weight_v";
+        }
+        const auto meta = source.require_metadata(name);
+        if (meta.shape.size() != 3 || meta.shape[0] != in_channels[up] || meta.shape[1] != channels[up] ||
+            meta.shape[2] <= 0) {
+            throw std::runtime_error("RVC voice checkpoint has unsupported decoder upsample tensor shape for " +
+                                     name + ": " + source_label);
+        }
+        layout.upsample_kernel_sizes[static_cast<size_t>(up)] = meta.shape[2];
+        const auto padding = layout.upsample_kernel_sizes[static_cast<size_t>(up)] -
+            layout.upsample_rates[static_cast<size_t>(up)];
+        if (padding < 0 || padding % 2 != 0) {
+            throw std::runtime_error("RVC voice checkpoint has unsupported decoder upsample padding for " +
+                                     name + ": " + source_label);
+        }
+    }
+    return layout;
+}
+
 RvcVoiceModel load_rvc_voice_model(const std::filesystem::path & checkpoint_path) {
     RvcVoiceModel voice;
     voice.checkpoint_path = checkpoint_path;
@@ -823,6 +869,10 @@ RvcVoiceModel load_rvc_voice_model(const std::filesystem::path & checkpoint_path
     if (voice.sample_rate <= 0) {
         throw std::runtime_error("RVC voice checkpoint has invalid sample rate: " + checkpoint_path.string());
     }
+    voice.synthesizer_layout = infer_rvc_synthesizer_layout(
+        *voice.checkpoint,
+        voice.sample_rate,
+        checkpoint_path.string());
     voice.has_f0 = voice.checkpoint->has_tensor("enc_p.emb_pitch.weight");
     const auto speaker = voice.checkpoint->require_metadata("emb_g.weight");
     if (speaker.shape.size() != 2 || speaker.shape[0] <= 0) {

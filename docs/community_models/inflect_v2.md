@@ -9,10 +9,9 @@ the original source/conversion instructions below remain valid for manual use.
 Both variants use the same runtime and produce 24 kHz mono audio. The initial
 integration supports offline FP32 inference only.
 
-The runtime does not use ONNX Runtime. The model manager downloads pinned
-official ONNX exports, validates their complete tensor inventories and
-dimensions, and writes one `model.safetensors` file locally. PyTorch is not
-required.
+The runtime does not use ONNX Runtime. The default download is the published
+GGUF package. The deprecated converter can still rebuild local safetensors from
+the official ONNX exports for manual testing.
 
 ## Install
 
@@ -28,12 +27,15 @@ On macOS:
 brew install espeak-ng
 ```
 
-Then install either model:
+Then install the default GGUF package:
 
 ```bash
-uv run --with onnx --with safetensors python tools/model_manager.py install inflect_micro_v2 --models-root models
-uv run --with onnx --with safetensors python tools/model_manager.py install inflect_nano_v2 --models-root models
+python tools/model_manager_v2.py install inflect_micro_v2_orig --models-root models
 ```
+
+The deprecated source-conversion workflow remains available through
+`tools/model_manager_deprecated.py` for users who want to rebuild from the
+upstream ONNX assets themselves.
 
 ## Run
 
@@ -208,7 +210,7 @@ Install the exact package used by the path test and resolve the external
 eSpeak-ng paths:
 
 ```powershell
-uv run --with onnx --with safetensors python tools/model_manager.py `
+uv run --with onnx --with safetensors python tools/model_manager_deprecated.py `
   install inflect_micro_v2 --models-root build-inflect/models
 
 $espeakLibrary = uv run --with espeakng-loader python -c `

@@ -10,7 +10,7 @@ default-versus-`mem_saver` memory behavior.
 Install the safetensors model, IBM DAC, and Qwen3 Forced Aligner resources:
 
 ```bash
-python tools/model_manager.py install outetts_1_0_1b --models-dir models
+python tools/model_manager_deprecated.py install outetts_1_0_1b --models-dir models
 ```
 
 The model-manager package id is `outetts_1_0_1b`. It creates these model

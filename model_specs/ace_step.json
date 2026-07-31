@@ -1,5 +1,45 @@
 {
   "family": "ace_step",
+  "display_name": "ACE-Step",
+  "description": "Open-source ACE-Step 1.5 music generation model for text-to-music and lyrics-to-song workflows across 50+ languages, with editing routes such as cover generation, repainting, continuation, stem extraction, and vocal-to-BGM conversion.",
+  "category": "audio_generation",
+  "status": "supported",
+  "tasks": [
+    "music",
+    "edit"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "50+ languages"
+  ],
+  "capabilities": {
+    "music": [
+      "lyrics"
+    ],
+    "edit": [
+      "prompt_editing"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "ace_step_turbo_bf16",
+    "tags": [
+      "Music",
+      "Edit",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/ace_step.md",
+      "docs/music_generation.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

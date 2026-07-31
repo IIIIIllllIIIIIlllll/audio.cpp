@@ -360,7 +360,7 @@ git commit -s -m "Register Fun-ASR-Nano offline ASR"
 - Modify: `model_specs/fun_asr_nano.json`
 - Create: `tests/fun_asr_nano/test_gguf_roundtrip.cpp`
 - Create: `tests/fun_asr_nano/compare_transcripts.py`
-- Modify: `tools/model_manager.py`
+- Modify: `tools/model_manager_deprecated.py`
 - Modify: `docs/gguf.md`
 
 **Interfaces:**
@@ -391,7 +391,7 @@ Use `audio-cpp/audio.cpp-gguf`, exact filenames, SHA-backed Hub revisions, model
 - [ ] **Step 5: Back up and commit**
 
 ```bash
-git add model_specs/fun_asr_nano.json tools/model_manager.py \
+git add model_specs/fun_asr_nano.json tools/model_manager_deprecated.py \
   tests/fun_asr_nano docs/gguf.md
 git commit -s -m "Add Fun-ASR-Nano GGUF packages"
 ```

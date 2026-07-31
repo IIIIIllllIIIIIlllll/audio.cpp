@@ -1,5 +1,48 @@
 {
   "family": "miocodec",
+  "display_name": "MioCodec",
+  "description": "Lightweight neural audio codec that encodes 44.1 kHz audio into a low-rate 25 Hz discrete token stream and decodes tokens with speaker conditioning for efficient speech modeling.",
+  "category": "audio_tools",
+  "status": "supported",
+  "tasks": [
+    "codec",
+    "vc",
+    "s2s"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "language_agnostic"
+  ],
+  "capabilities": {
+    "codec": [
+      "encode_decode"
+    ],
+    "vc": [
+      "speaker_reference"
+    ],
+    "s2s": [
+      "speaker_reference"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "miocodec_q8_0",
+    "tags": [
+      "Codec",
+      "VC",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/audio_tools.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

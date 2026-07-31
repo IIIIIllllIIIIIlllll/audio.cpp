@@ -1,5 +1,72 @@
 {
   "family": "moss_tts_local",
+  "display_name": "MOSS-TTS-Local",
+  "description": "Flagship MOSS-TTS model for high-fidelity 31-language and code-switched speech, zero-shot voice cloning, long-form generation, and fine-grained Pinyin, phoneme, and duration control.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "ar",
+    "cs",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "fa",
+    "fi",
+    "fr",
+    "he",
+    "hi",
+    "hu",
+    "it",
+    "ja",
+    "ko",
+    "mk",
+    "ms",
+    "nl",
+    "pl",
+    "pt",
+    "ro",
+    "ru",
+    "sv",
+    "sw",
+    "th",
+    "tl",
+    "tr",
+    "vi",
+    "yue",
+    "zh"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "moss_tts_local_v1_5_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/moss_tts.md",
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

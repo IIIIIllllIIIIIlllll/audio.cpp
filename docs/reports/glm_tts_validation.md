@@ -52,7 +52,7 @@ reference transcript:  If you actually care about security
 Install the package with:
 
 ```powershell
-python tools\model_manager.py install glm_tts --models-dir ..\models
+python tools\model_manager_deprecated.py install glm_tts --models-dir ..\models
 ```
 
 The installer downloads `zai-org/GLM-TTS`, converts Flow and HiFT from the

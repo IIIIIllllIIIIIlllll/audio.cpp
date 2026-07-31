@@ -237,7 +237,6 @@
       "files": [
         "Text to audio (TTS)/GLM-TTS_Q8.gguf"
       ],
-      "strip_prefix": "Text to audio (TTS)",
       "download": {
         "kind": "huggingface_snapshot",
         "repo": "mirek190/audio.cpp"

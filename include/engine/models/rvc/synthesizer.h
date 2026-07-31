@@ -2,6 +2,7 @@
 
 #include "engine/framework/assets/tensor_source.h"
 #include "engine/framework/core/backend.h"
+#include "engine/models/rvc/assets.h"
 
 #include <cstdint>
 #include <memory>
@@ -32,6 +33,7 @@ public:
         engine::core::BackendConfig backend,
         engine::assets::TensorStorageType storage_type,
         int sample_rate,
+        RvcSynthesizerLayout layout,
         bool v1,
         bool has_f0);
     ~RvcSynthesizer();

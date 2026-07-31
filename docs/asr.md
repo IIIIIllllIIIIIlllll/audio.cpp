@@ -3,7 +3,7 @@
 | Model | Family | Mode(s) | Quick Start |
 |---|---|---|---|
 | Fun-ASR-Nano | `fun_asr_nano` | offline | [Fun-ASR-Nano](#fun-asr-nano) |
-| Qwen3 ASR | `qwen3_asr` | offline | [Qwen3 ASR](#qwen3-asr) |
+| Qwen3 ASR | `qwen3_asr` | offline, streaming | [Qwen3 ASR](#qwen3-asr) |
 | Citrinet ASR | `citrinet_asr` | offline | [Citrinet ASR](#citrinet-asr) |
 | Kroko Community ASR | `kroko_asr` | offline, streaming | [Kroko Community ASR](#kroko-community-asr) |
 | Higgs Audio STT | `higgs_audio_stt` | offline, streaming | [Higgs Audio STT](#higgs-audio-stt) |
@@ -43,10 +43,14 @@ and server details.
 
 ## Qwen3 ASR
 
-Qwen3 ASR transcribes speech and can be paired with Qwen3 Forced Aligner when timestamps are needed. See [Qwen3 models](models/qwen3.md) for the full ASR and alignment manual.
+Qwen3 ASR transcribes speech and can be paired with Qwen3 Forced Aligner when timestamps are needed. Streaming mode accepts live audio chunks and emits buffered transcript deltas; timestamp output remains an offline path. See [Qwen3 models](models/qwen3.md) for the full ASR and alignment manual.
 
 ```bash
 audiocpp_cli --task asr --family qwen3_asr --model models/Qwen3-ASR-1.7B-hf --backend cuda --audio speech_16k.wav --text-out transcript.txt
+```
+
+```bash
+audiocpp_cli --task asr --mode streaming --family qwen3_asr --model models/Qwen3-ASR-1.7B-hf --backend cuda --audio speech_16k.wav --request-option audio_chunk_seconds=5 --text-out transcript.txt
 ```
 
 ## Citrinet ASR
@@ -92,7 +96,7 @@ Portuguese, Swedish, and Turkish. The model manager defaults to the standalone
 English Q8_0 GGUF package:
 
 ```powershell
-python .\tools\model_manager.py install kroko_asr_community_q8_0 --models-root .\models --overwrite
+python .\tools\model_manager_v2.py install kroko_asr_community_q8_0 --models-root .\models --overwrite
 ```
 
 ```powershell
@@ -255,7 +259,7 @@ long-form, and buffered-streaming transcription. The model manager defaults to
 the standalone Q8_0 GGUF package.
 
 ```bash
-python3 tools/model_manager.py install parakeet_tdt_q8_0 --models-root models
+python3 tools/model_manager_v2.py install parakeet_tdt_q8_0 --models-root models
 audiocpp_cli --task asr --family parakeet_tdt \
   --model models/Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf \
   --backend cuda --audio speech_16k.wav --text-out transcript.txt

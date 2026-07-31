@@ -1,5 +1,39 @@
 {
   "family": "sortformer_diar",
+  "display_name": "Sortformer Diarization",
+  "description": "NVIDIA Transformer-based end-to-end speaker diarization model trained primarily on English speech, predicting speaker labels directly from audio and resolving speaker ordering by arrival time for up to four speakers.",
+  "category": "speech_analysis",
+  "status": "supported",
+  "tasks": [
+    "diar"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "en"
+  ],
+  "capabilities": {
+    "diar": [
+      "speaker_turns"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "sortformer_diar_4spk_v1_q8_0",
+    "tags": [
+      "Diar",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/audio_tools.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

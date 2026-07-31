@@ -37,6 +37,7 @@ struct RvcSynthesizerWeights {
     std::unordered_map<std::string, TensorValue> tensors;
     std::unordered_map<std::string, std::vector<float>> relative_embeddings;
     int sample_rate = 0;
+    RvcSynthesizerLayout layout;
     bool v1 = false;
     bool has_f0 = true;
 };
@@ -128,6 +129,7 @@ std::shared_ptr<RvcSynthesizerWeights> load_weights(
     engine::core::BackendConfig backend,
     engine::assets::TensorStorageType storage_type,
     int sample_rate,
+    RvcSynthesizerLayout layout,
     bool v1,
     bool has_f0) {
     if (source == nullptr) {
@@ -135,6 +137,7 @@ std::shared_ptr<RvcSynthesizerWeights> load_weights(
     }
     auto weights = std::make_shared<RvcSynthesizerWeights>();
     weights->sample_rate = sample_rate;
+    weights->layout = layout;
     weights->v1 = v1;
     weights->has_f0 = has_f0;
     weights->execution_context = std::make_shared<engine::core::ExecutionContext>(backend);
@@ -651,15 +654,12 @@ TensorValue build_generator(
                     .build(ctx, g, conv1d_weights(weights, "dec.cond"));
     x = engine::modules::AddModule{}.build(ctx, x, repeat_like(ctx, cond, x));
 
-    const int64_t up_rates[4] = {10, 10, 2, 2};
-    const int64_t up_kernels[4] = {16, 16, 4, 4};
     const int64_t channels[4] = {256, 128, 64, 32};
     const int64_t in_channels[4] = {512, 256, 128, 64};
-    const int64_t noise_kernels[4] = {80, 8, 4, 1};
-    const int64_t noise_strides[4] = {40, 4, 2, 1};
-    const int64_t noise_paddings[4] = {20, 2, 1, 0};
     const int64_t kernels[3] = {3, 7, 11};
     for (int64_t up = 0; up < 4; ++up) {
+        const int64_t up_rate = weights.layout.upsample_rates[static_cast<size_t>(up)];
+        const int64_t up_kernel = weights.layout.upsample_kernel_sizes[static_cast<size_t>(up)];
         x = leaky_relu(ctx, x);
         x = conv_transpose1d_pytorch_padding(
             ctx,
@@ -668,16 +668,22 @@ TensorValue build_generator(
             "dec.ups." + std::to_string(up),
             in_channels[up],
             channels[up],
-            up_kernels[up],
-            up_rates[up],
-            (up_kernels[up] - up_rates[up]) / 2);
+            up_kernel,
+            up_rate,
+            (up_kernel - up_rate) / 2);
         if (weights.has_f0) {
+            int64_t noise_stride = 1;
+            for (int64_t next = up + 1; next < 4; ++next) {
+                noise_stride *= weights.layout.upsample_rates[static_cast<size_t>(next)];
+            }
+            const int64_t noise_kernel = noise_stride == 1 ? 1 : noise_stride * 2;
+            const int64_t noise_padding = noise_stride / 2;
             auto x_source = engine::modules::Conv1dModule({
                 1,
                 channels[up],
-                noise_kernels[up],
-                static_cast<int>(noise_strides[up]),
-                static_cast<int>(noise_paddings[up]),
+                noise_kernel,
+                static_cast<int>(noise_stride),
+                static_cast<int>(noise_padding),
                 1,
                 true}).build(ctx, source, conv1d_weights(weights, "dec.noise_convs." + std::to_string(up)));
             x = engine::modules::AddModule{}.build(ctx, x, x_source);
@@ -724,10 +730,18 @@ RvcSynthesizer::RvcSynthesizer(
     engine::core::BackendConfig backend,
     engine::assets::TensorStorageType storage_type,
     int sample_rate,
+    RvcSynthesizerLayout layout,
     bool v1,
     bool has_f0)
     : state_(std::make_shared<State>()) {
-    state_->weights = load_weights(std::move(source), std::move(backend), storage_type, sample_rate, v1, has_f0);
+    state_->weights = load_weights(
+        std::move(source),
+        std::move(backend),
+        storage_type,
+        sample_rate,
+        layout,
+        v1,
+        has_f0);
 }
 
 RvcSynthesizer::~RvcSynthesizer() {
@@ -753,9 +767,10 @@ RvcSynthesizerOutput RvcSynthesizer::infer(const RvcSynthesizerInput & input) co
         throw std::runtime_error("RVC synthesizer input shape is invalid");
     }
     const bool has_f0 = state_->weights->has_f0;
+    const int64_t hop_samples = state_->weights->layout.hop_samples;
     if (static_cast<int64_t>(input.features.size()) != input.frames * input.feature_dim ||
         (has_f0 && static_cast<int64_t>(input.pitch.size()) != input.frames) ||
-        (has_f0 && static_cast<int64_t>(input.sine_source.size()) != input.frames * 400) ||
+        (has_f0 && static_cast<int64_t>(input.sine_source.size()) != input.frames * hop_samples) ||
         (!has_f0 && !input.pitch.empty()) ||
         (!has_f0 && !input.sine_source.empty())) {
         throw std::runtime_error("RVC synthesizer input values do not match shape");
@@ -804,7 +819,7 @@ RvcSynthesizerOutput RvcSynthesizer::infer(const RvcSynthesizerInput & input) co
             state_->sine = engine::core::make_tensor(
                 ctx,
                 GGML_TYPE_F32,
-                TensorShape::from_dims({1, input.frames * 400, 1}));
+                TensorShape::from_dims({1, input.frames * hop_samples, 1}));
         }
         auto stats = build_text_encoder_stats(
             ctx,

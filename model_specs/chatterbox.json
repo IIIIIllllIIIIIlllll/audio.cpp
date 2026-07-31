@@ -1,5 +1,64 @@
 {
   "family": "chatterbox",
+  "display_name": "Chatterbox",
+  "description": "Open-source Chatterbox family for expressive TTS and voice conversion, with emotion exaggeration control, fast generation, zero-shot voice cloning, and an integrated multilingual TTS path.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone",
+    "vc"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "ar",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "fi",
+    "fr",
+    "hi",
+    "it",
+    "ko",
+    "ms",
+    "nl",
+    "no",
+    "pl",
+    "pt",
+    "sv",
+    "sw",
+    "tr"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ],
+    "vc": [
+      "speaker_reference"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "chatterbox_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "VC",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

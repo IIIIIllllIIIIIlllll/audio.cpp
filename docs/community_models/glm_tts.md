@@ -21,13 +21,22 @@ listed below remain an internal compatibility layer for existing users.
 | Voice input | Required reference WAV plus its exact transcript |
 | Output | mono 24 kHz WAV |
 
-Install and prepare the official checkpoint:
+Install the default package:
 
 ```bash
-python tools/model_manager.py install glm_tts --models-dir models
+python tools/model_manager_v2.py install glm_tts --models-root models
 ```
 
-The installer downloads `zai-org/GLM-TTS`, converts the official Flow and HiFT
+The default install is the standalone Q8 GGUF package.
+
+The original safetensors preparation path remains available through the
+deprecated manager:
+
+```bash
+python tools/model_manager_deprecated.py install glm_tts --models-dir models
+```
+
+That installer downloads `zai-org/GLM-TTS`, converts the official Flow and HiFT
 PyTorch checkpoints to safetensors, prepares the ChatGLM tokenizer resources,
 and installs the matching CAMPPlus safetensors weights. The latter are sourced
 from `mlx-community/index-tts2-mlx` because the GLM-TTS repository publishes

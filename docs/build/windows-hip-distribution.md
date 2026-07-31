@@ -4,7 +4,7 @@ This document explains how to build and package audio.cpp HIP/ROCm binaries on W
 
 The approach mirrors the llama.cpp Windows HIP release (`.github/workflows/release.yml`, `windows-hip` job), adjusted for audio.cpp and verified against a local ROCm 6.4 / 7.1 installation.
 
-For HIP build instructions (compiler setup, MSVC toolset compatibility, iGPU vs dGPU tuning), see [docs/HIP.md](../HIP.md).
+For HIP build instructions (compiler setup, MSVC toolset compatibility, iGPU vs dGPU tuning), see [docs/build/HIP.md](HIP.md).
 
 ---
 
@@ -25,7 +25,7 @@ Both tracks cover gfx1103 (780M) via hipBLASLt. The 7.1 package README must stat
 
 Both tracks were verified locally (2026-07-29): 145 `.cu` files compiled for every target arch, dependency chains match §2 (`amdhip64_6` + `hipblas` + `hipblaslt` on 6.4; `amdhip64_7` + `libhipblas` + `libhipblaslt` on 7.1), no `libomp140.x86_64.dll`, embedded model specs resolve.
 
-> **Two build-environment requirements** (both documented in [docs/HIP.md](../HIP.md)):
+> **Two build-environment requirements** (both documented in [docs/build/HIP.md](HIP.md)):
 >
 > 1. Run the build from a prompt that selects the **MSVC 14.44 toolset** (`vcvarsall.bat x64 -vcvars_ver=14.44`). ROCm's HIP clang cannot parse the `cmath` of MSVC 14.51 (VS 2026) — every `.cu` compile fails.
 > 2. Pass `-NoNativeCpu` so the CPU backend is not compiled with the build machine's native ISA (see "CPU Portability" below).

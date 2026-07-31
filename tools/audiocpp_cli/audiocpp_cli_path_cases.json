@@ -1720,6 +1720,29 @@
       ]
     },
     {
+      "id": "qwen3_asr_streaming",
+      "coverage": "Qwen3 ASR buffered streaming chunk ingestion, transcript deltas, and finalize",
+      "family": "qwen3_asr",
+      "model": "models/Qwen3-ASR-0.6B",
+      "task": "asr",
+      "mode": "streaming",
+      "outputs": [
+        "text"
+      ],
+      "chunk_size": 16000,
+      "requests": [
+        {
+          "id": "sample_streaming",
+          "audio": "resources/sample.wav",
+          "language": "English",
+          "text": "Transcribe the speech exactly. Preserve numeric values.",
+          "options": {
+            "audio_chunk_seconds": "5"
+          }
+        }
+      ]
+    },
+    {
       "id": "qwen3_asr_with_forced_aligner_words",
       "coverage": "Qwen3 ASR integrated transcript decode followed by forced aligner word timestamps",
       "family": "qwen3_asr",

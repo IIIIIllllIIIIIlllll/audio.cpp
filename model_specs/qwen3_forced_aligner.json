@@ -1,5 +1,49 @@
 {
   "family": "qwen3_forced_aligner",
+  "display_name": "Qwen3 Forced Aligner",
+  "description": "Qwen3 non-autoregressive forced aligner that aligns transcript text to speech and returns word- or character-level timestamps across 11 supported languages.",
+  "category": "speech_analysis",
+  "status": "supported",
+  "tasks": [
+    "align"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "zh",
+    "en",
+    "yue",
+    "fr",
+    "de",
+    "it",
+    "ja",
+    "ko",
+    "pt",
+    "ru",
+    "es"
+  ],
+  "capabilities": {
+    "align": [
+      "word_timestamps"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "qwen3_forced_aligner_0_6b_q8_0",
+    "tags": [
+      "Align",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/qwen3.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

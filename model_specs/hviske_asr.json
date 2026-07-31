@@ -1,5 +1,49 @@
 {
   "family": "hviske_asr",
+  "display_name": "Hviske ASR",
+  "description": "Danish-optimized Conformer encoder-decoder ASR model fine-tuned from the Hviske v5 family, with selectable Cohere ASR language prompts.",
+  "category": "asr",
+  "status": "supported",
+  "tasks": [
+    "asr"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "ar",
+    "da",
+    "de",
+    "el",
+    "en",
+    "es",
+    "fr",
+    "it",
+    "ja",
+    "ko",
+    "nl",
+    "pl",
+    "pt",
+    "vi",
+    "zh"
+  ],
+  "capabilities": {},
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "hviske_asr_q8_0",
+    "tags": [
+      "ASR",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/asr.md",
+      "docs/gguf.md"
+    ]
+  },
   "packages": [
     {
       "id": "hviske_asr_q8_0",

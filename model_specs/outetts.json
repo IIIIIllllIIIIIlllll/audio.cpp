@@ -277,7 +277,6 @@
       "files": [
         "Text to audio (TTS)/Llama-OuteTTS-1.0-1B_Q8.gguf"
       ],
-      "strip_prefix": "Text to audio (TTS)",
       "download": {
         "kind": "huggingface_snapshot",
         "repo": "mirek190/audio.cpp"

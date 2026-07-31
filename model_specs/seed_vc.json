@@ -1,5 +1,45 @@
 {
   "family": "seed_vc",
+  "display_name": "Seed-VC",
+  "description": "Zero-shot voice conversion and singing voice conversion model for transferring timbre and style from reference audio, with low-latency realtime conversion and optional lightweight fine-tuning.",
+  "category": "voice_conversion",
+  "status": "supported",
+  "tasks": [
+    "vc",
+    "svc"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "language_agnostic"
+  ],
+  "capabilities": {
+    "vc": [
+      "speaker_reference"
+    ],
+    "svc": [
+      "speaker_reference",
+      "singing"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "seed_vc_mlx_q8_0",
+    "tags": [
+      "VC",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/seed_vc.md",
+      "docs/audio_tools.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

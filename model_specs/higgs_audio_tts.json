@@ -1,5 +1,41 @@
 {
   "family": "higgs_audio_tts",
+  "display_name": "Higgs Audio v3 TTS",
+  "description": "Boson AI conversational TTS model for expressive speech across 100+ languages, zero-shot voice cloning, and inline control over emotion, style, prosody, pauses, and sound effects.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "100+ languages"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "higgs_audio_tts_4b_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

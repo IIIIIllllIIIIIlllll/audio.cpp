@@ -1,5 +1,75 @@
 {
   "family": "qwen3_asr",
+  "display_name": "Qwen3-ASR",
+  "description": "Qwen ASR model family for language identification and speech recognition across 30 languages, 22 Chinese dialects, and multiple English accents, with robustness for noisy, long-form, and singing audio.",
+  "category": "asr",
+  "status": "supported",
+  "tasks": [
+    "asr"
+  ],
+  "modes": [
+    "offline",
+    "streaming"
+  ],
+  "languages": [
+    "zh",
+    "en",
+    "yue",
+    "ar",
+    "de",
+    "fr",
+    "es",
+    "pt",
+    "id",
+    "it",
+    "ko",
+    "ru",
+    "th",
+    "vi",
+    "ja",
+    "tr",
+    "hi",
+    "ms",
+    "nl",
+    "sv",
+    "da",
+    "fi",
+    "pl",
+    "cs",
+    "fil",
+    "fa",
+    "el",
+    "hu",
+    "mk",
+    "ro",
+    "zh dialects"
+  ],
+  "capabilities": {
+    "asr": [
+      "word_timestamps",
+      "vad_chunking",
+      "partial_results"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf",
+      "stream"
+    ]
+  },
+  "ui": {
+    "recommended_package": "qwen3_asr_1_7b_q8_0",
+    "tags": [
+      "ASR",
+      "GGUF",
+      "Stream"
+    ],
+    "docs": [
+      "docs/models/qwen3.md",
+      "docs/asr.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

@@ -1,5 +1,50 @@
 {
   "family": "stable_audio",
+  "display_name": "Stable Audio 3",
+  "description": "Stability AI generative audio model family for text-to-music, sound effects, audio-to-audio editing, inpainting, continuation, variable-length generation, and LoRA personalization.",
+  "category": "audio_generation",
+  "status": "supported",
+  "tasks": [
+    "music",
+    "sfx",
+    "edit"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "en"
+  ],
+  "capabilities": {
+    "music": [
+      "lyrics"
+    ],
+    "sfx": [
+      "prompt_generation"
+    ],
+    "edit": [
+      "prompt_editing"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "stable_audio_3_medium_q8_0",
+    "tags": [
+      "Music",
+      "SFX",
+      "Edit",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/models/stable_audio.md",
+      "docs/music_generation.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

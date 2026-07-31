@@ -1,5 +1,46 @@
 {
   "family": "irodori_tts",
+  "display_name": "Irodori-TTS",
+  "description": "Japanese TTS model based on RF-DiT continuous audio latents, supporting zero-shot voice cloning, automatic duration prediction, multimodal voice design, and emoji-style control.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone",
+    "design"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "ja"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ],
+    "design": [
+      "voice_design"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "irodori_tts_600m_v3_voicedesign_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "Design",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

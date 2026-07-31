@@ -1,5 +1,35 @@
 {
   "family": "citrinet_asr",
+  "display_name": "Citrinet ASR",
+  "description": "NVIDIA CitriNet-family end-to-end English ASR model using a convolutional CTC architecture optimized for transcribing speech segments to text.",
+  "category": "asr",
+  "status": "supported",
+  "tasks": [
+    "asr"
+  ],
+  "modes": [
+    "offline"
+  ],
+  "languages": [
+    "en"
+  ],
+  "capabilities": {},
+  "runtime": {
+    "tags": [
+      "gguf"
+    ]
+  },
+  "ui": {
+    "recommended_package": "citrinet_asr_q8_0",
+    "tags": [
+      "ASR",
+      "GGUF"
+    ],
+    "docs": [
+      "docs/asr.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

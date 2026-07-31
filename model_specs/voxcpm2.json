@@ -1,5 +1,79 @@
 {
   "family": "voxcpm2",
+  "display_name": "VoxCPM2",
+  "description": "OpenBMB tokenizer-free TTS model supporting 30 languages and 9 Chinese dialects, with 48 kHz output, natural-language voice design, controllable short-reference voice cloning, and expressive style guidance.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone",
+    "design"
+  ],
+  "modes": [
+    "offline",
+    "streaming"
+  ],
+  "languages": [
+    "ar",
+    "my",
+    "zh",
+    "zh dialects",
+    "da",
+    "nl",
+    "en",
+    "fi",
+    "fr",
+    "de",
+    "el",
+    "he",
+    "hi",
+    "id",
+    "it",
+    "ja",
+    "km",
+    "ko",
+    "lo",
+    "ms",
+    "no",
+    "pl",
+    "pt",
+    "ru",
+    "es",
+    "sw",
+    "sv",
+    "tl",
+    "th",
+    "tr",
+    "vi"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ],
+    "design": [
+      "voice_design"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf",
+      "stream"
+    ]
+  },
+  "ui": {
+    "recommended_package": "voxcpm2_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "Design",
+      "GGUF",
+      "Stream"
+    ],
+    "docs": [
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

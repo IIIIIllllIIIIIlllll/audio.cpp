@@ -1,5 +1,50 @@
 {
   "family": "omnivoice",
+  "display_name": "OmniVoice",
+  "description": "Massively multilingual zero-shot TTS model from k2-fsa for 600+ languages, supporting short-reference voice cloning, attribute-based voice design, pronunciation controls, and nonverbal tags.",
+  "category": "tts",
+  "status": "supported",
+  "tasks": [
+    "tts",
+    "clone",
+    "design"
+  ],
+  "modes": [
+    "offline",
+    "streaming"
+  ],
+  "languages": [
+    "600+ languages"
+  ],
+  "capabilities": {
+    "clone": [
+      "speaker_reference"
+    ],
+    "design": [
+      "voice_design"
+    ]
+  },
+  "runtime": {
+    "tags": [
+      "gguf",
+      "stream"
+    ]
+  },
+  "ui": {
+    "recommended_package": "omnivoice_q8_0",
+    "tags": [
+      "TTS",
+      "Clone",
+      "Design",
+      "GGUF",
+      "Stream"
+    ],
+    "docs": [
+      "docs/models/omnivoice.md",
+      "docs/tts.md",
+      "docs/gguf.md"
+    ]
+  },
   "package_defaults": {
     "download": {
       "kind": "huggingface_snapshot",

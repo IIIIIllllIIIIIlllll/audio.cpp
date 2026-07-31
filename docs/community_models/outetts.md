@@ -17,16 +17,23 @@ released aligner and DAC-arena option names as internal compatibility aliases.
 | Voice input | Optional reference WAV plus its transcript |
 | Output | mono 24 kHz WAV |
 
-Install both the language model and its DAC dependency:
+Install the default standalone GGUF package:
 
 ```bash
-python tools/model_manager.py install outetts_1_0_1b --models-dir models
+python tools/model_manager_v2.py install outetts_1_0_1b_q8_0 --models-root models
 ```
 
-The standalone Q8 GGUF package can also be downloaded directly from
+It can also be downloaded directly from
 [mirek190/audio.cpp](https://huggingface.co/mirek190/audio.cpp/tree/main/Text%20to%20audio%20(TTS)).
 Use `Llama-OuteTTS-1.0-1B_Q8.gguf` as the `--model` path when running the
 GGUF examples below.
+
+The original safetensors plus DAC layout remains available through the
+deprecated manager for users who want that source layout:
+
+```bash
+python tools/model_manager_deprecated.py install outetts_1_0_1b --models-dir models
+```
 
 Run the safetensors package:
 
