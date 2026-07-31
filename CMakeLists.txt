@@ -1187,7 +1187,7 @@ if (ENGINE_ENABLE_OPENMP)
 endif()
 
 if (MSVC)
-    target_compile_options(engine_runtime PRIVATE /utf-8)
+    target_compile_options(engine_runtime PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
 endif()
 
 if (ENGINE_ENABLE_CUDA AND NOT ENGINE_ENABLE_HIP)
