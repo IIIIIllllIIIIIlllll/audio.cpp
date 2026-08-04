@@ -16,9 +16,11 @@ audiocpp_cli --task <task> --family <family> --model <model-dir> --backend <back
 | `--backend` | `cpu`, `cuda`, `vulkan`, `metal`, `best` | `cpu` | Inference backend. |
 | `--mode` | `offline`, `streaming` | `offline` | Run mode. Most models are offline. |
 | `--device` | integer | `0` | Backend device index. |
+| `--list-devices` | flag | off | List available backend devices and exit; combine with `--backend`/`--device` to select one. |
 | `--threads` | integer | `4` | Backend/OpenMP worker threads. |
 | `--log` | flag | off | Print progress and timing logs to stdout. |
 | `--log-file` | path | not set | Stream progress and timing logs to a file. |
+| `--metrics` | flag | off | Print compact offline wall time, audio duration, RTF, realtime speed, sample rate, and channel metrics. |
 
 ## Common Inputs And Outputs
 
@@ -63,6 +65,7 @@ Omit these unless you need explicit control. If `--seed` is omitted, models that
 
 | Option | Meaning |
 |---|---|
+| `--request-sequence <json>` | Run multiple JSON requests through one offline model session. |
 | `--batch-text-file <txt>` | One request per non-empty text line. |
 | `--batch-text-dir <dir>` | One request per `.txt`, `.md`, or `.json` file; each file is normalized into a single paragraph. |
 | `--batch-audio-dir <dir>` | One request per `.wav` file. |
@@ -71,6 +74,19 @@ Omit these unless you need explicit control. If `--seed` is omitted, models that
 | `--batch-manifest-out <json>` | Write a batch output manifest. |
 
 `--batch-text-dir` reads `.txt` and `.md` files as plain text. For `.json`, use either a JSON string root or an object with a string `input` or `text` field.
+
+Use `--request-sequence` when you want to send multiple requests in one long-lived offline session:
+
+```bash
+audiocpp_cli --task tts --family pocket_tts \
+  --model models/PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf \
+  --backend cuda \
+  --request-sequence requests.json \
+  --out-dir outputs \
+  --metrics
+```
+
+For each request id, `--metrics` prints `metrics[<id>].wall_ms`, `audio_duration_ms`, `rtf`, `x_realtime`, `sample_rate`, and `channels`.
 
 ## Model Docs
 
