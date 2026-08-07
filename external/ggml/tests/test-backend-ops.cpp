@@ -7965,6 +7965,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_conv_transpose_1d({3,2,1,1}, {3,1,2,1}, 1, 0, 1));
     test_cases.emplace_back(new test_conv_transpose_1d({2,1,1,1}, {3,1,1,1}, 1, 0, 1));
 
+    // Large shapes from the Irodori-TTS codec decoder (audio.cpp#192):
+    // the Vulkan conv_transpose_1d shader crosses L_blocks 2 -> 3 at L=257
+    test_cases.emplace_back(new test_conv_transpose_1d({221, 1536, 1, 1}, {24, 768, 1536, 1}, 12, 0, 1));
+    test_cases.emplace_back(new test_conv_transpose_1d({256, 1536, 1, 1}, {24, 768, 1536, 1}, 12, 0, 1));
+    test_cases.emplace_back(new test_conv_transpose_1d({257, 1536, 1, 1}, {24, 768, 1536, 1}, 12, 0, 1));
+    test_cases.emplace_back(new test_conv_transpose_1d({261, 1536, 1, 1}, {24, 768, 1536, 1}, 12, 0, 1));
+    test_cases.emplace_back(new test_conv_transpose_1d({3132, 768, 1, 1}, {20, 384, 768, 1}, 10, 0, 1));
+    test_cases.emplace_back(new test_conv_transpose_1d({31320, 384, 1, 1}, {16, 192, 384, 1}, 8, 0, 1));
+    test_cases.emplace_back(new test_conv_transpose_1d({250560, 192, 1, 1}, {4, 96, 192, 1}, 2, 0, 1));
+
     for (ggml_type kernel_type : {GGML_TYPE_F32, GGML_TYPE_F16}) {
         test_cases.emplace_back(new test_conv_transpose_2d({3, 2, 3, 1}, {2, 2, 1, 3}, 1, kernel_type));
         test_cases.emplace_back(new test_conv_transpose_2d({10, 10, 9, 1}, {3, 3, 1, 9}, 2, kernel_type));

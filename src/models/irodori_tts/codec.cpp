@@ -6,7 +6,10 @@
 #include "engine/framework/modules/primitive_modules.h"
 #include "engine/framework/modules/structural_modules.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -569,6 +572,54 @@ void normalize_reference_audio_in_place(std::vector<float> &mono,
 
 } // namespace
 
+namespace {
+
+// Debug probe for the Vulkan codec decoder corruption (audio.cpp#192):
+// enabled with IRODORI_CODEC_DEBUG_DUMP=1, prints per-node value ranges of
+// the decode graph after execution so the first node producing garbage
+// (non-finite or |x| > 1e4) can be identified.
+void dump_graph_node_ranges(ggml_cgraph *graph, const char *tag) {
+  const int n_nodes = ggml_graph_n_nodes(graph);
+  fprintf(stderr, "[irodori-codec-dump] %s: %d nodes\n", tag, n_nodes);
+  for (int i = 0; i < n_nodes; ++i) {
+    const ggml_tensor *node = ggml_graph_node(graph, i);
+    if (node->op == GGML_OP_NONE || ggml_is_view(node) ||
+        node->type != GGML_TYPE_F32) {
+      continue;
+    }
+    std::vector<float> values;
+    try {
+      values = core::read_tensor_f32(node);
+    } catch (const std::exception &e) {
+      fprintf(stderr, "[irodori-codec-dump] node %d op=%s name=%s: readback failed: %s\n",
+              i, ggml_op_name(node->op), node->name, e.what());
+      continue;
+    }
+    float min_value = INFINITY, max_value = -INFINITY;
+    int64_t bad_count = 0, first_bad = -1;
+    for (size_t j = 0; j < values.size(); ++j) {
+      const float v = values[j];
+      min_value = std::min(min_value, v);
+      max_value = std::max(max_value, v);
+      if (!std::isfinite(v) || std::fabs(v) > 1e4F) {
+        ++bad_count;
+        if (first_bad < 0) {
+          first_bad = static_cast<int64_t>(j);
+        }
+      }
+    }
+    fprintf(stderr,
+            "[irodori-codec-dump] node %d op=%s name=%s ne=[%lld,%lld,%lld,%lld] "
+            "min=%.6g max=%.6g bad=%lld first_bad=%lld\n",
+            i, ggml_op_name(node->op), node->name,
+            (long long)node->ne[0], (long long)node->ne[1],
+            (long long)node->ne[2], (long long)node->ne[3],
+            min_value, max_value, (long long)bad_count, (long long)first_bad);
+  }
+}
+
+} // namespace
+
 class IrodoriCodec::Impl {
 public:
   Impl(std::shared_ptr<const IrodoriTTSAssets> assets,
@@ -765,6 +816,9 @@ private:
       ggml_backend_synchronize(owner_->backend_);
       if (status != GGML_STATUS_SUCCESS) {
         throw std::runtime_error("Irodori-TTS codec graph compute failed");
+      }
+      if (std::getenv("IRODORI_CODEC_DEBUG_DUMP") != nullptr) {
+        dump_graph_node_ranges(graph_, "decode");
       }
       auto samples = core::read_tensor_f32(output_.tensor);
       if (target_samples > 0 &&
