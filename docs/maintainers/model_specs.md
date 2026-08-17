@@ -35,9 +35,9 @@ Top-level fields:
 | `schema_version` | Must be `1`. | No |
 | `family` | Runtime model family id. Must match the filename stem. | Yes, if changing an already published family id |
 | `display_name` | User-facing model family name. | No |
-| `category` | Typed category such as `asr`, `tts`, `audio_generation`, or `community`. | No |
+| `category` | Typed category such as `asr`, `tts`, `audio_generation`, `audio_tools`, or `community`. | No |
 | `status` | Typed status: `supported`, `community`, `experimental`, `wip`, or `unsupported`. | No |
-| `tasks` | Typed task tags such as `asr`, `tts`, `clone`, `vc`, or `align`. | No |
+| `tasks` | Typed task tags such as `asr`, `tts`, `clone`, `vc`, `midi`, or `align`. | No |
 | `modes` | Supported run modes: `offline` and/or `streaming`. | No |
 | `languages` | Family-level language scope, such as `en`, `zh`, `ja`, `multilingual`, or `language_agnostic`. | No |
 | `runtime` | Runtime tags such as `gguf` or `stream`. | No |
@@ -191,10 +191,13 @@ runtime option key is derived as `<family>.<option>`.
 Required dependencies are unconditional. Optional dependencies must declare
 typed `required_when` rows. Each row is a condition over a public option key.
 Common request keys such as `return_timestamps` stay unprefixed; model-specific
-keys stay namespaced. The dependency is needed when any row matches.
-`dependencies[].option` must name a declared option in the dependency `scope`,
-and every `required_when[].option_key` must refer to a declared public option in
-the referenced scope. Multiple `required_when` rows use OR semantics.
+session/load keys stay namespaced as `<family>.<name>`. Multiple rows are OR'd:
+the dependency is needed when **any** row matches.
+
+`dependencies[].option` must be a local name that already exists under
+`options.<scope>` for the same dependency `scope`. Each
+`required_when[].option_key` must refer to an option declared under
+`options.<required_when.scope>` (using the public key form above).
 
 ```json
 {
