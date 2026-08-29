@@ -80,6 +80,15 @@ uint64_t hash_audio_samples(const runtime::AudioBuffer & audio) {
     return hash;
 }
 
+uint64_t hash_speech_codes(const BreezeSpeechCodes & codes) {
+    uint64_t hash = 1469598103934665603ull;
+    for (const int32_t code : codes.codes) {
+        hash ^= static_cast<uint32_t>(code);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
 std::unique_ptr<runtime::IVoiceTaskSession> create_breeze_tts_session(
     const runtime::TaskSpec & task,
     const runtime::SessionOptions & options,
@@ -167,6 +176,7 @@ BreezeSpeechCodes BreezeTTSSession::resolve_reference_codes(const runtime::Audio
     entry.codes = generator_->encode_reference(audio);
     engine::debug::trace_log_scalar("breeze_tts.reference.frames", entry.codes.frames);
     engine::debug::trace_log_scalar("breeze_tts.reference.codebooks", entry.codes.code_groups);
+    engine::debug::trace_log_scalar("breeze_tts.reference.codes_hash", hash_speech_codes(entry.codes));
     if (reference_cache_.capacity() == 0) {
         uncached_reference_ = std::move(entry);
     } else {
@@ -214,11 +224,20 @@ runtime::TaskResult BreezeTTSSession::run(const runtime::TaskRequest & request) 
         generation.text = chunk.text_input->text;
         generation.instruction = runtime::find_option(chunk.options, {"instruction"}).value_or("");
         generation.reference_text = runtime::find_option(chunk.options, {"reference_text"}).value_or("");
-        generation.guidance_scale = runtime::parse_positive_finite_float_option(chunk.options, {"guidance_scale"}).value_or(generation.guidance_scale);
+        generation.guidance_scale = runtime::parse_finite_float_option(chunk.options, {"guidance_scale"}).value_or(generation.guidance_scale);
+        if (generation.guidance_scale < 0.0F) {
+            throw std::runtime_error("BreezeTTS guidance_scale must be non-negative");
+        }
         generation.temperature = runtime::parse_positive_finite_float_option(chunk.options, {"temperature"}).value_or(generation.temperature);
         generation.depth_temperature = runtime::parse_positive_finite_float_option(chunk.options, {"depth_temperature"}).value_or(generation.depth_temperature);
         generation.top_k = runtime::parse_i64_option(chunk.options, {"top_k"}).value_or(generation.top_k);
-        generation.top_p = runtime::parse_positive_finite_float_option(chunk.options, {"top_p"}).value_or(generation.top_p);
+        if (generation.top_k < 0) {
+            throw std::runtime_error("BreezeTTS top_k must be non-negative");
+        }
+        generation.top_p = runtime::parse_finite_float_option(chunk.options, {"top_p"}).value_or(generation.top_p);
+        if (generation.top_p < 0.0F || generation.top_p > 1.0F) {
+            throw std::runtime_error("BreezeTTS top_p must be in [0, 1]");
+        }
         generation.max_tokens = runtime::parse_positive_i64_option(chunk.options, {"max_tokens"}, generation.max_tokens);
         generation.seed = runtime::parse_u64_option(chunk.options, {"seed"}).value_or(generation.seed);
         generation.reference_codes = reference_codes;
