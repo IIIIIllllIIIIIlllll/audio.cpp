@@ -30,7 +30,7 @@ Voice design:
 
 ```bash
 audiocpp_cli \
-  --task tts \
+  --task vdes \
   --family breeze_tts \
   --model models/Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf \
   --backend cuda \
@@ -45,7 +45,7 @@ audiocpp_cli \
 |---|---|
 | Family | `breeze_tts` |
 | Default GGUF | `models/Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf` |
-| Tasks | `tts`, `clon` |
+| Tasks | `tts`, `clon`, `vdes` |
 | Modes | `offline` |
 | Languages | `zh`, `en` |
 | Voice input | Optional for `tts`; required for `clon` |
@@ -61,8 +61,8 @@ audiocpp_cli \
 | `--request-option text_chunk_mode=<mode>` | `default`, `tag_aware`, `japanese`, `endline` | `default` | Framework text chunk mode. |
 | `--request-option max_tokens=<n>` | integer > 0 | `1500` | Maximum generated acoustic frames. |
 | `--request-option guidance_scale=<f>` | float >= 0 | `1.0` | Classifier-free guidance scale. |
-| `--request-option temperature=<f>` | float >= 0 | `0.9` | Backbone sampling temperature. |
-| `--request-option depth_temperature=<f>` | float >= 0 | `0.9` | Depth decoder sampling temperature. |
+| `--request-option temperature=<f>` | float > 0 | `0.9` | Backbone sampling temperature. |
+| `--request-option depth_temperature=<f>` | float > 0 | `0.9` | Depth decoder sampling temperature. |
 | `--request-option top_k=<n>` | integer >= 0 | `50` | Top-k sampling limit; `0` disables top-k filtering. |
 | `--request-option top_p=<f>` | `0..1` | `1.0` | Top-p sampling limit. |
 | `--request-option seed=<n>` | integer >= 0 | `0` | Generation seed. |
@@ -87,7 +87,31 @@ ENGINE_TORCH_SAMPLING_POLICY=68x1024 audiocpp_cli ... --backend hip ...
 
 The pinned path uses the CUDA/PyTorch-compatible Philox categorical sampler on
 the host for both backends. It makes the generated acoustic codes identical
-when the model logits are otherwise identical. The final WAV need not be
-bit-identical because the CUDA and HIP speech-decoder kernels can differ in
-floating-point rounding; compare codes or waveform correlation when checking
-backend parity.
+when the model logits are otherwise identical. With `--log`, compare
+`breeze_tts.generate.semantic_codes_hash` and
+`breeze_tts.generate.codes_hash` before comparing waveforms.
+
+An equal seed is not by itself a bit-exact cross-backend guarantee. CUDA and HIP
+BF16 kernels can produce slightly different logits, and a small difference near
+a sampling boundary can make a long generation diverge. Voice cloning can also
+diverge earlier if the reference encoder quantizes the same waveform to
+different codes; `breeze_tts.reference.codes_hash` distinguishes that case from
+a sampler problem. Even when all generated codes match, the final WAV need not
+be bit-identical because speech-decoder floating-point rounding can differ.
+
+## ROCm Performance Notes
+
+At the default `guidance_scale=1`, BreezeTTS skips the mathematically redundant
+unconditional backbone prompt, prefill, and decode. The depth transformer stays
+batched to preserve its established numerical path. On one gfx1151 regression
+case this reduced autoregressive time by about 16% and end-to-end time by about
+15%; the exact gain depends on the prompt and generated length. Other guidance
+scales retain the full classifier-free-guidance path.
+
+Profiling on gfx1151 showed that the main remaining ROCm cost is the many small
+batch-1 and batch-2 BF16 matrix-vector kernels in autoregressive and depth
+decode, rather than Philox sampling. Forcing those operations through
+hipBLASLt was slower in the measured workload, while disabling HIP graphs or
+forcing F16 weight storage did not materially close the gap. Treat such backend
+overrides as experiments and benchmark the complete request before enabling
+them by default.

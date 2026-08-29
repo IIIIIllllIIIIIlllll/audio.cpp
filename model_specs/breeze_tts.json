@@ -89,17 +89,17 @@
       {
         "name": "temperature",
         "type": "float",
-        "description": "Backbone first-codebook sampling temperature.",
+        "description": "Backbone first-codebook sampling temperature; must be positive.",
         "required": false,
-        "min": 0.0,
+        "min": 0.001,
         "default": 0.9
       },
       {
         "name": "depth_temperature",
         "type": "float",
-        "description": "Depth decoder codebook sampling temperature.",
+        "description": "Depth decoder codebook sampling temperature; must be positive.",
         "required": false,
-        "min": 0.0,
+        "min": 0.001,
         "default": 0.9
       },
       {
