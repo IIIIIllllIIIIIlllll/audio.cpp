@@ -67,3 +67,27 @@ audiocpp_cli \
 | `--request-option top_p=<f>` | `0..1` | `1.0` | Top-p sampling limit. |
 | `--request-option seed=<n>` | integer >= 0 | `0` | Generation seed. |
 | `--session-option breeze_tts.reference_cache_slots=<n>` | integer >= 0 | `1` | Prepared reference-audio cache slots. |
+
+## CUDA/HIP Seeded Parity
+
+CUDA sampling derives its Philox TensorIterator layout from the device's SM
+count and maximum threads per SM. The BreezeTTS vocabularies are small enough
+that normal CUDA GPUs use the complete TensorIterator grid. HIP now uses the
+same full-grid CUDA/PyTorch-compatible sampler by default instead of the legacy
+`std::discrete_distribution` fallback, so equal logits and seeds select equal
+acoustic codes.
+
+The layout can also be pinned explicitly for strict cross-machine regression
+testing. For an RTX 2080 Ti, the observed CUDA layout is `68x1024`:
+
+```bash
+ENGINE_TORCH_SAMPLING_POLICY=68x1024 audiocpp_cli ... --backend cuda ...
+ENGINE_TORCH_SAMPLING_POLICY=68x1024 audiocpp_cli ... --backend hip ...
+```
+
+The pinned path uses the CUDA/PyTorch-compatible Philox categorical sampler on
+the host for both backends. It makes the generated acoustic codes identical
+when the model logits are otherwise identical. The final WAV need not be
+bit-identical because the CUDA and HIP speech-decoder kernels can differ in
+floating-point rounding; compare codes or waveform correlation when checking
+backend parity.

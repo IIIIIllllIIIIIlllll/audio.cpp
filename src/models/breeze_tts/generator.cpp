@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -246,16 +247,18 @@ int32_t sample_logits(
     uint64_t & offset_blocks,
     std::string_view context) {
     const sampling::HfTorchSamplingState torch_state{policy, seed, call_index, offset_blocks, true};
+    const bool use_torch_sampling =
+        policy != nullptr && (policy->cuda_fast_path || policy->torch_compatible_sampling);
     const int32_t token = sampling::HfSampler{}.sample(
         logits,
         history,
         options,
         scratch,
         fallback_rng,
-        policy != nullptr && policy->cuda_fast_path ? &torch_state : nullptr,
+        use_torch_sampling ? &torch_state : nullptr,
         context);
     ++call_index;
-    if (policy != nullptr && policy->cuda_fast_path) {
+    if (use_torch_sampling) {
         offset_blocks += sampling::torch_cuda_tensor_iterator_offset_blocks(static_cast<uint64_t>(logits.size()), *policy);
     }
     return token;
@@ -545,6 +548,38 @@ private:
     std::vector<Graph> head_graphs_;
 };
 
+sampling::TorchCudaSamplingPolicy resolve_breeze_sampling_policy(
+    const std::shared_ptr<const BreezeTTSAssets> & assets,
+    core::ExecutionContext & execution) {
+    const char * pinned_policy = std::getenv("ENGINE_TORCH_SAMPLING_POLICY");
+    if (execution.backend_type() == core::BackendType::Hip &&
+        (pinned_policy == nullptr || *pinned_policy == '\0')) {
+        if (assets == nullptr) {
+            throw std::runtime_error("BreezeTTS generator requires assets");
+        }
+        // Breeze's ~2K-token heads use a nine-block CUDA launch grid on normal
+        // GPUs. Pin HIP to that full grid so its Philox element mapping matches
+        // CUDA GPUs whose occupancy cap does not reduce it.
+        constexpr int64_t kTorchCudaBlockSize = 256;
+        sampling::TorchCudaSamplingPolicy policy;
+        policy.multiprocessor_count =
+            (assets->config.lm_head_size + kTorchCudaBlockSize - 1) / kTorchCudaBlockSize;
+        policy.max_threads_per_multiprocessor = kTorchCudaBlockSize;
+        policy.torch_compatible_sampling = true;
+        engine::debug::log_message(
+            engine::debug::LogLevel::Warning,
+            "breeze_tts.sampling",
+            "using CUDA-compatible full-grid Philox sampling on HIP");
+        return policy;
+    }
+    return sampling::resolve_torch_cuda_sampling_policy(
+        execution.backend_type(),
+        execution.config().device,
+        "breeze_tts.sampling",
+        "BreezeTTS",
+        sampling::TorchCudaSamplingPolicyFailureMode::FallbackToDefault);
+}
+
 }  // namespace
 
 struct BreezeGeneratorRuntime::Impl {
@@ -558,12 +593,7 @@ struct BreezeGeneratorRuntime::Impl {
           execution(execution),
           tokenizer(this->assets),
           text_encoder(this->assets, execution, graph_arena_bytes, weight_context_bytes, storage_type),
-          sampling_policy(sampling::resolve_torch_cuda_sampling_policy(
-              execution.backend_type(),
-              execution.config().device,
-              "breeze_tts.sampling",
-              "BreezeTTS",
-              sampling::TorchCudaSamplingPolicyFailureMode::FallbackToDefault)) {
+          sampling_policy(resolve_breeze_sampling_policy(this->assets, execution)) {
         if (this->assets == nullptr) {
             throw std::runtime_error("BreezeTTS generator requires assets");
         }
@@ -729,7 +759,7 @@ struct BreezeGeneratorRuntime::Impl {
                 options,
                 scratch,
                 fallback_rng,
-                sampling_policy.cuda_fast_path ? &sampling_policy : nullptr,
+                &sampling_policy,
                 request.seed,
                 call_index,
                 offset_blocks,
@@ -851,7 +881,7 @@ struct BreezeGeneratorRuntime::Impl {
                     first_options,
                     scratch,
                     fallback_rng,
-                    sampling_policy.cuda_fast_path ? &sampling_policy : nullptr,
+                    &sampling_policy,
                     request.seed,
                     sample_call_index,
                     offset_blocks,

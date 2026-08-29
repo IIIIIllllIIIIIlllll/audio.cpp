@@ -14,6 +14,8 @@ struct TorchCudaSamplingPolicy {
     int64_t max_threads_per_multiprocessor = 256;
     bool cuda_fast_path = false;
     int cuda_device_index = 0;
+    // Use the CUDA-compatible Philox categorical sampler even without CUDA runtime kernels.
+    bool torch_compatible_sampling = false;
 };
 
 enum class TorchCudaSamplingPolicyFailureMode {

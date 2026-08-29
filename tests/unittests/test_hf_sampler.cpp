@@ -170,7 +170,9 @@ int32_t reference_sample(
     for (const int32_t token : candidates) {
         weights.push_back(std::exp(static_cast<double>(scores[static_cast<size_t>(token)] - max_score)));
     }
-    if (torch_state != nullptr && torch_state->policy != nullptr && torch_state->policy->cuda_fast_path) {
+    if (torch_state != nullptr &&
+        torch_state->policy != nullptr &&
+        (torch_state->policy->cuda_fast_path || torch_state->policy->torch_compatible_sampling)) {
         double best_rank = -std::numeric_limits<double>::infinity();
         int32_t best_token = -1;
         for (size_t index = 0; index < candidates.size(); ++index) {
@@ -316,6 +318,106 @@ void test_matches_python_hf_cuda_multinomial_reference_sequence() {
             &torch_state,
             "python HF cuda");
         engine::test::require_eq(actual, expected[step], "python HF CUDA multinomial token sequence");
+    }
+}
+
+void test_host_policy_matches_python_hf_cuda_multinomial_reference_sequence() {
+    TorchCudaSamplingPolicy policy;
+    policy.cuda_fast_path = false;
+    policy.torch_compatible_sampling = true;
+    policy.multiprocessor_count = 128;
+    policy.max_threads_per_multiprocessor = 1536;
+    HfTorchSamplingState torch_state;
+    torch_state.policy = &policy;
+    torch_state.seed = 1;
+
+    HfSampler sampler;
+    HfSamplerScratch scratch;
+    HfSamplingOptions options;
+    options.do_sample = true;
+    options.temperature = 0.82F;
+    options.top_k = 64;
+    options.top_p = 0.86F;
+    options.min_tokens_to_keep = 2;
+    options.repetition_penalty = 1.15F;
+    std::mt19937 fallback_rng(1);
+    const std::vector<int32_t> expected{2537, 2526, 2513, 3960, 3934, 2507, 3946, 3933, 3921, 2478};
+    for (size_t step = 0; step < expected.size(); ++step) {
+        torch_state.call_index = static_cast<uint64_t>(step);
+        const int generator_step = static_cast<int>(3 + step);
+        const int32_t actual = sampler.sample(
+            make_logits(4096, generator_step),
+            make_history(4096, generator_step),
+            options,
+            scratch,
+            fallback_rng,
+            &torch_state,
+            "host CUDA-compatible");
+        engine::test::require_eq(actual, expected[step], "host CUDA-compatible multinomial token sequence");
+    }
+}
+
+void test_small_vocab_full_grid_policy_matches_cuda_layout() {
+    TorchCudaSamplingPolicy cuda_policy;
+    cuda_policy.cuda_fast_path = true;
+    cuda_policy.multiprocessor_count = 68;
+    cuda_policy.max_threads_per_multiprocessor = 1024;
+    TorchCudaSamplingPolicy host_policy;
+    host_policy.torch_compatible_sampling = true;
+    host_policy.multiprocessor_count = 9;
+    host_policy.max_threads_per_multiprocessor = 256;
+
+    HfTorchSamplingState cuda_state;
+    cuda_state.policy = &cuda_policy;
+    cuda_state.seed = 123456;
+    cuda_state.use_offset_blocks = true;
+    HfTorchSamplingState host_state;
+    host_state.policy = &host_policy;
+    host_state.seed = cuda_state.seed;
+    host_state.use_offset_blocks = true;
+
+    HfSampler sampler;
+    HfSamplerScratch cuda_scratch;
+    HfSamplerScratch host_scratch;
+    HfSamplingOptions options;
+    options.do_sample = true;
+    options.temperature = 0.9F;
+    options.top_k = 50;
+    options.top_p = 1.0F;
+    options.min_tokens_to_keep = 1;
+    options.repetition_penalty = 1.1F;
+    std::mt19937 cuda_fallback_rng(1);
+    std::mt19937 host_fallback_rng(1);
+    for (size_t step = 0; step < 24; ++step) {
+        const auto logits = make_logits(2052, static_cast<int>(step));
+        const auto history = make_history(logits.size(), static_cast<int>(step));
+        host_state.offset_blocks = cuda_state.offset_blocks;
+        const int32_t cuda_token = sampler.sample(
+            logits,
+            history,
+            options,
+            cuda_scratch,
+            cuda_fallback_rng,
+            &cuda_state,
+            "CUDA full grid");
+        const int32_t host_token = sampler.sample(
+            logits,
+            history,
+            options,
+            host_scratch,
+            host_fallback_rng,
+            &host_state,
+            "HIP full grid");
+        engine::test::require_eq(host_token, cuda_token, "small-vocab full-grid token parity");
+        const auto cuda_advance = engine::sampling::torch_cuda_tensor_iterator_offset_blocks(
+            logits.size(),
+            cuda_policy);
+        const auto host_advance = engine::sampling::torch_cuda_tensor_iterator_offset_blocks(
+            logits.size(),
+            host_policy);
+        engine::test::require_eq(host_advance, cuda_advance, "small-vocab full-grid offset parity");
+        cuda_state.offset_blocks += cuda_advance;
+        host_state.offset_blocks += host_advance;
     }
 }
 
@@ -500,6 +602,64 @@ void benchmark_sampler_path() {
     std::cout << "hf_sampler_speedup " << (reference_ms / optimized_ms) << '\n';
 }
 
+void benchmark_breeze_sampler_paths() {
+    constexpr int repeats = 10;
+    constexpr int samples_per_request = 20 * 16;
+    constexpr size_t vocab_size = 2052;
+    const std::vector<float> logits = make_logits(vocab_size, 0);
+    const std::vector<int32_t> history = make_history(vocab_size, 0);
+
+    HfSamplingOptions options;
+    options.do_sample = true;
+    options.temperature = 0.9F;
+    options.top_k = 50;
+    options.top_p = 1.0F;
+    options.min_tokens_to_keep = 1;
+    options.repetition_penalty = 1.1F;
+
+    HfSampler sampler;
+    const double fallback_ms = elapsed_ms([&] {
+        for (int repeat = 0; repeat < repeats; ++repeat) {
+            HfSamplerScratch scratch;
+            std::mt19937 rng(123456);
+            for (int sample = 0; sample < samples_per_request; ++sample) {
+                (void)sampler.sample(logits, history, options, scratch, rng, nullptr, "Breeze fallback bench");
+            }
+        }
+    });
+
+    TorchCudaSamplingPolicy policy;
+    policy.torch_compatible_sampling = true;
+    policy.multiprocessor_count = 9;
+    policy.max_threads_per_multiprocessor = 256;
+    const auto offset_advance = engine::sampling::torch_cuda_tensor_iterator_offset_blocks(vocab_size, policy);
+    const double philox_ms = elapsed_ms([&] {
+        for (int repeat = 0; repeat < repeats; ++repeat) {
+            HfSamplerScratch scratch;
+            std::mt19937 fallback_rng(123456);
+            HfTorchSamplingState state;
+            state.policy = &policy;
+            state.seed = 123456;
+            state.use_offset_blocks = true;
+            for (int sample = 0; sample < samples_per_request; ++sample) {
+                (void)sampler.sample(
+                    logits,
+                    history,
+                    options,
+                    scratch,
+                    fallback_rng,
+                    &state,
+                    "Breeze Philox bench");
+                state.offset_blocks += offset_advance;
+            }
+        }
+    });
+
+    std::cout << "breeze_sampler_fallback_ms_per_request " << (fallback_ms / repeats) << '\n';
+    std::cout << "breeze_sampler_philox_ms_per_request " << (philox_ms / repeats) << '\n';
+    std::cout << "breeze_sampler_philox_overhead_ms " << ((philox_ms - fallback_ms) / repeats) << '\n';
+}
+
 }  // namespace
 
 int main() {
@@ -507,6 +667,8 @@ int main() {
         test_greedy_fast_path_matches_reference();
         test_matches_python_hf_processor_reference_values();
         test_matches_python_hf_cuda_multinomial_reference_sequence();
+        test_host_policy_matches_python_hf_cuda_multinomial_reference_sequence();
+        test_small_vocab_full_grid_policy_matches_cuda_layout();
         test_matches_python_hf_cpu_multinomial_reference_sequence();
         test_no_processor_sampling_fast_path_matches_reference();
         test_no_processor_torch_fast_path_ignores_previous_candidates();
@@ -514,6 +676,7 @@ int main() {
         test_matches_reference_fallback_sampler();
         test_matches_reference_torch_sampler();
         benchmark_sampler_path();
+        benchmark_breeze_sampler_paths();
     } catch (const std::exception & error) {
         std::cerr << error.what() << '\n';
         return 1;

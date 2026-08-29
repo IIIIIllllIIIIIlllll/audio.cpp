@@ -302,12 +302,12 @@ void log_default_policy(std::string_view category, std::string_view reason) {
 }
 
 // ENGINE_TORCH_SAMPLING_POLICY pins the TensorIterator RNG layout instead of
-// probing the CUDA device, making the noise realization identical across
-// backends (CUDA/HIP/CPU) and machines. Accepted values: "default" (1x256)
-// or "<multiprocessor_count>x<max_threads_per_multiprocessor>" (e.g.
-// "68x1024"). Unset keeps the legacy behavior (device probe on CUDA, default
-// layout elsewhere). The pinned layout never uses the CUDA fast path so every
-// backend computes the same Philox element mapping on the host.
+// probing the CUDA device. Callers that pass the resulting policy to the
+// CUDA-compatible sampler then get the same Philox element mapping on every
+// backend. Accepted values: "default" (1x256) or
+// "<multiprocessor_count>x<max_threads_per_multiprocessor>" (e.g. "68x1024").
+// Unset keeps the legacy behavior (device probe on CUDA, default layout
+// elsewhere). The pinned layout never uses the CUDA fast path.
 std::optional<TorchCudaSamplingPolicy> pinned_policy_from_env(std::string_view log_category) {
     const char * value = std::getenv("ENGINE_TORCH_SAMPLING_POLICY");
     if (value == nullptr || *value == '\0') {
@@ -333,6 +333,7 @@ std::optional<TorchCudaSamplingPolicy> pinned_policy_from_env(std::string_view l
         }
     }
     policy.cuda_fast_path = false;
+    policy.torch_compatible_sampling = true;
     engine::debug::log_message(
         engine::debug::LogLevel::Warning,
         log_category,

@@ -378,7 +378,11 @@ int32_t HfTokenSampler::sample_from_processed_scores(
         scratch.probabilities_ready_ &&
         scratch.probabilities_scores_data_ == scores.data() &&
         scratch.probabilities_scores_size_ == scores.size();
-    if (torch_state != nullptr && torch_state->policy != nullptr && torch_state->policy->cuda_fast_path) {
+    const bool use_torch_philox =
+        torch_state != nullptr &&
+        torch_state->policy != nullptr &&
+        (torch_state->policy->cuda_fast_path || torch_state->policy->torch_compatible_sampling);
+    if (use_torch_philox) {
         if (!candidates_match_scores) {
             HfLogitsProcessor::build_candidates(scores, scratch, context);
         }
