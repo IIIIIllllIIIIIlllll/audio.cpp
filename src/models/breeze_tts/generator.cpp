@@ -583,6 +583,19 @@ sampling::TorchCudaSamplingPolicy resolve_breeze_sampling_policy(
 }  // namespace
 
 struct BreezeGeneratorRuntime::Impl {
+    struct DepthTiming {
+        double projector_single_ms = 0.0;
+        double projector_pair_ms = 0.0;
+        double prefill_ms = 0.0;
+        double head_ms = 0.0;
+        double sampling_ms = 0.0;
+        double decode_ms = 0.0;
+        int64_t frames = 0;
+        int64_t projector_single_calls = 0;
+        int64_t head_calls = 0;
+        int64_t decode_calls = 0;
+    };
+
     Impl(
         std::shared_ptr<const BreezeTTSAssets> assets,
         core::ExecutionContext & execution,
@@ -698,8 +711,10 @@ struct BreezeGeneratorRuntime::Impl {
         sampling::HfSamplerScratch & scratch,
         std::mt19937 & fallback_rng,
         uint64_t & call_index,
-        uint64_t & offset_blocks) {
+        uint64_t & offset_blocks,
+        DepthTiming & timing) {
         const auto & config = assets->config;
+        ++timing.frames;
         std::vector<int32_t> frame;
         frame.reserve(static_cast<size_t>(config.num_codebooks));
         frame.push_back(first_token);
@@ -716,8 +731,15 @@ struct BreezeGeneratorRuntime::Impl {
             return depth_projection->project_single(embedding);
         };
 
-        const auto first_embed = project_audio_embedding_row(first_token);
-        const auto projected = depth_projection->project_pair(cond_hidden, uncond_hidden);
+        std::vector<float> first_embed;
+        timing.projector_single_ms += engine::debug::measure_ms([&] {
+            first_embed = project_audio_embedding_row(first_token);
+        });
+        ++timing.projector_single_calls;
+        std::vector<float> projected;
+        timing.projector_pair_ms += engine::debug::measure_ms([&] {
+            projected = depth_projection->project_pair(cond_hidden, uncond_hidden);
+        });
         const auto split = projected.begin() + static_cast<std::ptrdiff_t>(config.depth_hidden_size);
         std::vector<float> cond_prefill;
         cond_prefill.reserve(static_cast<size_t>(2 * config.depth_hidden_size));
@@ -732,7 +754,10 @@ struct BreezeGeneratorRuntime::Impl {
         prefill.reserve(static_cast<size_t>(4 * config.depth_hidden_size));
         prefill.insert(prefill.end(), cond_prefill.begin(), cond_prefill.end());
         prefill.insert(prefill.end(), uncond_prefill.begin(), uncond_prefill.end());
-        auto depth = depth_pair->prefill_embeddings_batched(prefill, 2, 2);
+        modules::QwenCausalBatchedPrefillResult depth;
+        timing.prefill_ms += engine::debug::measure_ms([&] {
+            depth = depth_pair->prefill_embeddings_batched(prefill, 2, 2);
+        });
         if (static_cast<int64_t>(depth.hidden.size()) != 2 * config.depth_hidden_size) {
             throw std::runtime_error("BreezeTTS batched depth prefill hidden size mismatch");
         }
@@ -751,27 +776,46 @@ struct BreezeGeneratorRuntime::Impl {
         options.top_p = request.top_p;
         options.min_tokens_to_keep = 1;
         for (int64_t codebook = 1; codebook < config.num_codebooks; ++codebook) {
-            auto logits = depth_projection->logits_cfg(cond_hidden_now, uncond_hidden_now, codebook, request.guidance_scale);
+            std::vector<float> logits;
+            timing.head_ms += engine::debug::measure_ms([&] {
+                logits = depth_projection->logits_cfg(
+                    cond_hidden_now,
+                    uncond_hidden_now,
+                    codebook,
+                    request.guidance_scale);
+            });
+            ++timing.head_calls;
             suppress_reserved(logits, kCodecCodebookSize, config.vocab_size);
-            const int32_t token = sample_logits(
-                std::move(logits),
-                {},
-                options,
-                scratch,
-                fallback_rng,
-                &sampling_policy,
-                request.seed,
-                call_index,
-                offset_blocks,
-                "BreezeTTS depth sampler");
+            int32_t token = 0;
+            timing.sampling_ms += engine::debug::measure_ms([&] {
+                token = sample_logits(
+                    std::move(logits),
+                    {},
+                    options,
+                    scratch,
+                    fallback_rng,
+                    &sampling_policy,
+                    request.seed,
+                    call_index,
+                    offset_blocks,
+                    "BreezeTTS depth sampler");
+            });
             frame.push_back(token);
             if (codebook + 1 < config.num_codebooks) {
-                const auto next = project_audio_embedding_row(codebook * config.vocab_size + token);
+                std::vector<float> next;
+                timing.projector_single_ms += engine::debug::measure_ms([&] {
+                    next = project_audio_embedding_row(codebook * config.vocab_size + token);
+                });
+                ++timing.projector_single_calls;
                 std::vector<float> next_pair;
                 next_pair.reserve(static_cast<size_t>(2 * config.depth_hidden_size));
                 next_pair.insert(next_pair.end(), next.begin(), next.end());
                 next_pair.insert(next_pair.end(), next.begin(), next.end());
-                const auto step = depth_pair->decode_embeddings_batched(next_pair, 2);
+                modules::QwenCausalDecodeStepResult step;
+                timing.decode_ms += engine::debug::measure_ms([&] {
+                    step = depth_pair->decode_embeddings_batched(next_pair, 2);
+                });
+                ++timing.decode_calls;
                 if (static_cast<int64_t>(step.hidden.size()) != 2 * config.depth_hidden_size) {
                     throw std::runtime_error("BreezeTTS batched depth decode hidden size mismatch");
                 }
@@ -840,6 +884,7 @@ struct BreezeGeneratorRuntime::Impl {
         std::vector<int32_t> codes;
         double backbone_cond_prefill_ms = 0.0;
         double backbone_uncond_prefill_ms = 0.0;
+        DepthTiming depth_timing;
         const double ar_ms = engine::debug::measure_ms([&] {
             modules::QwenCausalPrefillResult cond;
             backbone_cond_prefill_ms = engine::debug::measure_ms([&] {
@@ -900,7 +945,8 @@ struct BreezeGeneratorRuntime::Impl {
                     scratch,
                     fallback_rng,
                     sample_call_index,
-                    offset_blocks);
+                    offset_blocks,
+                    depth_timing);
                 first_codebook_history.push_back(first_token);
                 codes.insert(codes.end(), frame.begin(), frame.end());
                 const auto embedded = frame_embedding(
@@ -928,6 +974,18 @@ struct BreezeGeneratorRuntime::Impl {
         engine::debug::timing_log_scalar("breeze_tts.ar.backbone_uncond_prefill_ms", backbone_uncond_prefill_ms);
         engine::debug::timing_log_scalar("breeze_tts.ar.backbone_cond_decode_ms", backbone_cond_decode_ms);
         engine::debug::timing_log_scalar("breeze_tts.ar.backbone_uncond_decode_ms", backbone_uncond_decode_ms);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.projector_single_ms", depth_timing.projector_single_ms);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.projector_pair_ms", depth_timing.projector_pair_ms);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.prefill_ms", depth_timing.prefill_ms);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.head_ms", depth_timing.head_ms);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.sampling_ms", depth_timing.sampling_ms);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.decode_ms", depth_timing.decode_ms);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.frames", depth_timing.frames);
+        engine::debug::timing_log_scalar(
+            "breeze_tts.ar.depth.projector_single_calls",
+            depth_timing.projector_single_calls);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.head_calls", depth_timing.head_calls);
+        engine::debug::timing_log_scalar("breeze_tts.ar.depth.decode_calls", depth_timing.decode_calls);
         backbone_cond->release_runtime_graphs();
         backbone_uncond->release_runtime_graphs();
         depth_pair->release_runtime_graphs();
