@@ -149,7 +149,11 @@ jobs:
 
           - ROCm 6.4 package: use this if you have an RX 7600 (gfx1102).
           - ROCm 7.1 package: for RDNA3/RDNA3.5/RDNA4 cards other than RX 7600.
-          - 780M / Strix Point iGPUs (gfx1103/gfx1150/gfx1151) work with either package.
+          - 780M / Strix Point / Strix Halo iGPUs (gfx1103/gfx1150/gfx1151):
+            they work with either package, but the upstream Vulkan build is
+            typically faster on shared-memory iGPUs — use that instead, or
+            benchmark both backends (--backend hip vs --backend vulkan) if you
+            don't mind the trouble.
 
           Details: docs/build/windows-hip-distribution.md
           "@
