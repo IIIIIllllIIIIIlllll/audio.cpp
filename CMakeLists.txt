@@ -375,6 +375,7 @@ add_library(engine_core OBJECT
     src/framework/io/json.cpp
     src/framework/io/text.cpp
     src/framework/text/chinese_normalization.cpp
+    src/framework/text/chinese_variant.cpp
     src/framework/text/chunking.cpp
     src/framework/text/subtitle.cpp
     src/framework/text/text_normalization.cpp
@@ -944,6 +945,48 @@ audiocpp_add_model(fish_audio
         engine::models::fish_audio::make_fish_audio_loader
 )
 
+# Fish Fast-AR emits a 4096-entry logits tensor for each acoustic codebook.
+# On Linux HIP, use a small device-side exact top-k helper so only the compact
+# sampling candidates cross back to the host. Other backends stay unchanged.
+if (ENGINE_ENABLE_HIP AND UNIX AND NOT APPLE)
+    find_program(AUDIOCPP_HIPCC hipcc REQUIRED)
+    set(AUDIOCPP_FISH_HIP_FAST_SAMPLER_OBJ "${CMAKE_CURRENT_BINARY_DIR}/fish_hip_fast_sampler.o")
+    set(AUDIOCPP_FISH_HIP_TARGETS ${CMAKE_HIP_ARCHITECTURES})
+    if (NOT AUDIOCPP_FISH_HIP_TARGETS)
+        set(AUDIOCPP_FISH_HIP_TARGETS ${GPU_TARGETS})
+    endif()
+    set(AUDIOCPP_FISH_HIP_ARCH_FLAGS)
+    foreach(AUDIOCPP_FISH_HIP_ARCH IN LISTS AUDIOCPP_FISH_HIP_TARGETS)
+        list(APPEND AUDIOCPP_FISH_HIP_ARCH_FLAGS "--offload-arch=${AUDIOCPP_FISH_HIP_ARCH}")
+    endforeach()
+    add_custom_command(
+        OUTPUT ${AUDIOCPP_FISH_HIP_FAST_SAMPLER_OBJ}
+        COMMAND ${AUDIOCPP_HIPCC} -O3 -fPIC ${AUDIOCPP_FISH_HIP_ARCH_FLAGS} -std=c++17
+            -c ${CMAKE_CURRENT_SOURCE_DIR}/src/models/fish_audio/hip_fast_sampler.cu
+            -o ${AUDIOCPP_FISH_HIP_FAST_SAMPLER_OBJ}
+        DEPENDS
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/models/fish_audio/hip_fast_sampler.cu
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/models/fish_audio/hip_fast_sampler.h
+        VERBATIM)
+    set_source_files_properties(${AUDIOCPP_FISH_HIP_FAST_SAMPLER_OBJ} PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+    target_compile_definitions(engine_model_fish_audio PRIVATE ENGINE_HAS_HIP_FISH_FAST_SAMPLER=1)
+endif()
+
+audiocpp_add_model(audio8_tts
+    SOURCES
+        src/community_models/audio8_tts/ar.cpp
+        src/community_models/audio8_tts/assets.cpp
+        src/community_models/audio8_tts/codec.cpp
+        src/community_models/audio8_tts/generator.cpp
+        src/community_models/audio8_tts/prompt_builder.cpp
+        src/community_models/audio8_tts/session.cpp
+        src/community_models/audio8_tts/tokenizer_text.cpp
+    INCLUDES
+        engine/community_models/audio8_tts/session.h
+    LOADERS
+        engine::models::audio8_tts::make_audio8_tts_loader
+)
+
 audiocpp_add_model(magpie_tts
     SOURCES
         src/models/magpie_tts/assets.cpp
@@ -1426,6 +1469,24 @@ audiocpp_add_model(chatterbox
         engine::models::chatterbox::make_chatterbox_loader
 )
 
+audiocpp_add_model(chatterbox_turbo
+    SOURCES
+        src/community_models/chatterbox_turbo/t3_turbo_weights.cpp
+        src/community_models/chatterbox_turbo/t3_turbo_component.cpp
+        src/community_models/chatterbox_turbo/s3gen_turbo.cpp
+        src/community_models/chatterbox_turbo/text_tokenizer_turbo.cpp
+        src/community_models/chatterbox_turbo/assets.cpp
+        src/community_models/chatterbox_turbo/loader.cpp
+        src/community_models/chatterbox_turbo/session.cpp
+        src/community_models/chatterbox_turbo/tts.cpp
+    INCLUDES
+        engine/community_models/chatterbox_turbo/loader.h
+    LOADERS
+        engine::community_models::chatterbox_turbo::make_chatterbox_turbo_loader
+    DEPENDS
+        chatterbox
+)
+
 audiocpp_add_model(ace_step
     SOURCES
         src/models/ace_step/assets.cpp
@@ -1640,6 +1701,9 @@ set(AUDIOCPP_RUNTIME_OBJECTS
 foreach(model_name IN LISTS AUDIOCPP_LINKED_MODELS)
     list(APPEND AUDIOCPP_RUNTIME_OBJECTS $<TARGET_OBJECTS:engine_model_${model_name}>)
 endforeach()
+if (ENGINE_ENABLE_HIP AND UNIX AND NOT APPLE AND "fish_audio" IN_LIST AUDIOCPP_LINKED_MODELS)
+    list(APPEND AUDIOCPP_RUNTIME_OBJECTS ${AUDIOCPP_FISH_HIP_FAST_SAMPLER_OBJ})
+endif()
 
 message(STATUS "audio.cpp model composite: ${AUDIOCPP_MODEL_SET} selected [${AUDIOCPP_ENABLED_MODELS}] linked [${AUDIOCPP_LINKED_MODELS}]")
 add_library(engine_runtime STATIC
@@ -2032,11 +2096,25 @@ if (ENGINE_BUILD_TESTS)
         COMMAND audio_chunking_test
     )
 
+    add_engine_unittest(wav_writer_formats_test tests/unittests/test_wav_writer_formats.cpp)
+
+    add_test(
+        NAME wav_writer_formats_test
+        COMMAND wav_writer_formats_test
+    )
+
     add_engine_unittest(chinese_normalization_test tests/unittests/test_chinese_normalization.cpp)
 
     add_test(
         NAME chinese_normalization_test
         COMMAND chinese_normalization_test
+    )
+
+    add_engine_unittest(text_chunking_test tests/unittests/test_text_chunking.cpp)
+
+    add_test(
+        NAME text_chunking_test
+        COMMAND text_chunking_test
     )
 
     add_engine_unittest(unicode_normalization_test tests/unittests/test_unicode_normalization.cpp)
