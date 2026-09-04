@@ -3,8 +3,10 @@
 | Model | Family | Task(s) | Quick Start |
 |---|---|---|---|
 | Qwen3 TTS | `qwen3_tts` | `tts`, `vdes` | [Qwen3 TTS](#qwen3-tts) |
+| BreezeTTS 2 | `breeze_tts` | `tts`, `clon` | [BreezeTTS 2](models/breeze_tts.md) |
 | Chatterbox | `chatterbox` | `clon`, `vc` | [Chatterbox](#chatterbox) |
 | Confucius4-TTS | `confucius4_tts` | `clon` | [Confucius4-TTS](#confucius4-tts) |
+| CosyVoice3 | `cosyvoice3` | `tts`, `clon` | [CosyVoice3](models/cosyvoice3.md) |
 | DramaBox | `dramabox` | `tts`, `clon` | [DramaBox](#dramabox) |
 | DotTTS | `dots_tts` | `tts`, `clon` | [DotTTS](#dottts) |
 | F5-TTS | `f5_tts` | `tts`, `clon` | [F5-TTS](community_models/f5_tts.md) |
@@ -29,6 +31,7 @@
 | GLM-TTS | `glm_tts` | `tts`, `clon` | [GLM-TTS](#glm-tts) |
 | Inflect Micro v2 | `inflect_v2` | `tts` | [Inflect v2](#inflect-v2) |
 | OuteTTS | `outetts` | `tts`, `clon` | [OuteTTS](#outetts) |
+| sanoTTS voice family | `sanotts` | `tts` | [sanoTTS](#sanotts) |
 | Supertonic | `supertonic` | `tts` | [Supertonic](#supertonic) |
 | VieNeu-TTS | `vietneu_tts` | `tts`, `clon` | [VieNeu-TTS](community_models/vietneu_tts.md) |
 | VibeVoice | `vibevoice` | `tts` | [VibeVoice](#vibevoice) |
@@ -767,6 +770,27 @@ audiocpp_cli --task tts --family inflect_v2 \
 See the [Inflect v2 community model guide](community_models/inflect_v2.md) for
 eSpeak-ng paths, long-form behavior, source/conversion instructions, and
 limitations.
+
+## sanoTTS
+
+sanoTTS is a family of very small offline TTS voices (English, Vietnamese,
+Indonesian; 294k to 2.27M parameters) with native GGML runtimes; the
+smallest voice also runs on microcontrollers. The GGUF packages are
+standalone and download from Hugging Face. sanoTTS requires an external
+eSpeak-ng installation:
+
+```bash
+python3 tools/model_manager_v2.py install sanotts_heart_nano_orig --models-root models
+
+audiocpp_cli --task tts --family sanotts \
+  --model models/sanoTTS-heart-nano-GGUF --backend cpu \
+  --text "Hello from sano T T S, a very small neural text to speech model." \
+  --request-option speaking_rate=1.0 \
+  --out sanotts.wav
+```
+
+See the [sanoTTS community model guide](community_models/sanotts.md) for
+eSpeak-ng paths, seed semantics, parity evidence, and performance numbers.
 
 ## Supertonic
 

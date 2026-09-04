@@ -630,6 +630,19 @@ audiocpp_add_model(personaplex
         engine::models::personaplex::make_personaplex_loader
 )
 
+audiocpp_add_model(sanotts
+    SOURCES
+        src/community_models/sanotts/assets.cpp
+        src/community_models/sanotts/frontend.cpp
+        src/community_models/sanotts/piper_runtime.cpp
+        src/community_models/sanotts/runtime.cpp
+        src/community_models/sanotts/session.cpp
+    INCLUDES
+        engine/community_models/sanotts/session.h
+    LOADERS
+        engine::models::sanotts::make_sanotts_loader
+)
+
 audiocpp_add_model(inflect_v2
     SOURCES
         src/community_models/inflect_v2/assets.cpp
@@ -1636,6 +1649,48 @@ audiocpp_add_model(firered_audio
         engine::models::firered_audio::make_firered_audio_loader
 )
 
+audiocpp_add_model(cosyvoice3
+    SOURCES
+        src/models/cosyvoice3/ar.cpp
+        src/models/cosyvoice3/assets.cpp
+        src/models/cosyvoice3/flow.cpp
+        src/models/cosyvoice3/frontend.cpp
+        src/models/cosyvoice3/hift.cpp
+        src/models/cosyvoice3/session.cpp
+        src/models/cosyvoice3/tokenizer_text.cpp
+    INCLUDES
+        engine/models/cosyvoice3/ar.h
+        engine/models/cosyvoice3/assets.h
+        engine/models/cosyvoice3/flow.h
+        engine/models/cosyvoice3/frontend.h
+        engine/models/cosyvoice3/hift.h
+        engine/models/cosyvoice3/session.h
+        engine/models/cosyvoice3/tokenizer_text.h
+    LOADERS
+        engine::models::cosyvoice3::make_cosyvoice3_loader
+)
+
+audiocpp_add_model(breeze_tts
+    SOURCES
+        src/models/breeze_tts/assets.cpp
+        src/models/breeze_tts/generator.cpp
+        src/models/breeze_tts/session.cpp
+        src/models/breeze_tts/speech_decoder.cpp
+        src/models/breeze_tts/speech_encoder.cpp
+        src/models/breeze_tts/text_encoder.cpp
+        src/models/breeze_tts/tokenizer_text.cpp
+    INCLUDES
+        engine/models/breeze_tts/assets.h
+        engine/models/breeze_tts/generator.h
+        engine/models/breeze_tts/session.h
+        engine/models/breeze_tts/speech_decoder.h
+        engine/models/breeze_tts/speech_encoder.h
+        engine/models/breeze_tts/text_encoder.h
+        engine/models/breeze_tts/tokenizer_text.h
+    LOADERS
+        engine::models::breeze_tts::make_breeze_tts_loader
+)
+
 set(AUDIOCPP_ENABLED_MODELS "")
 if (AUDIOCPP_MODEL_SET STREQUAL "full")
     set(AUDIOCPP_ENABLED_MODELS ${AUDIOCPP_MODEL_TARGETS})
@@ -2279,6 +2334,20 @@ if (ENGINE_BUILD_TESTS)
         COMMAND conv_lowering_matrix_test
     )
 
+    add_engine_unittest(i8_s_fused_ops_test tests/unittests/test_i8_s_fused_ops.cpp)
+
+    add_test(
+        NAME i8_s_fused_ops_test
+        COMMAND i8_s_fused_ops_test
+    )
+
+    add_engine_unittest(i2_s_mul_mat_test tests/unittests/test_i2_s_mul_mat.cpp)
+
+    add_test(
+        NAME i2_s_mul_mat_test
+        COMMAND i2_s_mul_mat_test
+    )
+
     add_engine_unittest(gguf_tensor_source_test tests/unittests/test_gguf_tensor_source.cpp)
     target_include_directories(gguf_tensor_source_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
 
@@ -2388,6 +2457,19 @@ if (ENGINE_BUILD_TESTS)
         add_test(
             NAME server_model_installer_test
             COMMAND server_model_installer_test
+        )
+
+        add_executable(package_manager_modelscope_test
+            tests/unittests/test_package_manager_modelscope.cpp
+        )
+        target_link_libraries(package_manager_modelscope_test PRIVATE
+            Threads::Threads audiocpp_package_manager)
+        target_compile_definitions(package_manager_modelscope_test PRIVATE
+            AUDIOCPP_NATIVE_MANAGER_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/native_model_manager_server.py")
+
+        add_test(
+            NAME package_manager_modelscope_test
+            COMMAND package_manager_modelscope_test
         )
     endif()
 
@@ -2543,6 +2625,13 @@ if (ENGINE_BUILD_TESTS)
         add_test(
             NAME echo_tts_host_units
             COMMAND echo_tts_host_units
+        )
+
+        add_engine_unittest(sanotts_frontend_test tests/unittests/test_sanotts_frontend.cpp)
+        target_include_directories(sanotts_frontend_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unittests)
+        add_test(
+            NAME sanotts_frontend_test
+            COMMAND sanotts_frontend_test
         )
 
         add_engine_unittest(inflect_v2_frontend_test tests/unittests/test_inflect_v2_frontend.cpp)
