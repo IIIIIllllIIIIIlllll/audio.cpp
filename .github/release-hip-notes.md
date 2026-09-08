@@ -15,14 +15,12 @@ prerequisite. A CPU fallback backend is included in the same binaries
 
 - **RX 7600 (gfx1102): use the ROCm 6.4 package.** ROCm 7.1 ships no hipBLASLt
   kernels for gfx1102, so the 7.1 package cannot serve it.
-- **Radeon 780M / Strix Point iGPUs** (gfx1103 / gfx1150):
-  **use the upstream Vulkan build instead.** These packages do run on iGPUs,
-  but on shared-memory iGPUs the HIP path is typically slower than Vulkan
-  (hipBLASLt GEMM is tuned for discrete cards, and UMA bandwidth further limits
-  the gain). If you don't mind the trouble, benchmark both on your workload —
-  `--backend hip` vs `--backend vulkan` — and keep whichever wins.
-- **Strix Halo (Radeon 8060S, gfx1151)**: either package works. Its 40-CU GPU
-  is far above 780M-class iGPUs, so the HIP backend is worthwhile here.
+- **Low-performance iGPUs (Radeon 780M and similar)**: **use the upstream
+  Vulkan build instead.** These packages do run on iGPUs, but the HIP path is
+  typically slower than Vulkan there (hipBLASLt GEMM is tuned for discrete
+  cards, and UMA bandwidth further limits the gain). If you don't mind the
+  trouble, benchmark both on your workload — `--backend hip` vs
+  `--backend vulkan` — and keep whichever wins.
 - **Older GPUs (RDNA2 / gfx103x and earlier):** not supported by these packages
   (Windows ROCm ships no hipBLASLt kernels for gfx103x). On self-built Linux
   ROCm setups, older cards also tend to perform worse than Vulkan — prefer the
