@@ -28,6 +28,7 @@
 | IndexTTS2 | `index_tts2` | `tts` | [IndexTTS](models/index_tts.md) |
 | IndexTTS2.5 | `index_tts2` (variant `2.5`) | `tts` | [IndexTTS](models/index_tts.md) |
 | Irodori-TTS | `irodori_tts` | `tts`, `vdes` | [Irodori-TTS](#irodori-tts) |
+| Kokoro 82M | `kokoro_tts` | `tts` | [Kokoro 82M](models/kokoro_tts.md) |
 | GLM-TTS | `glm_tts` | `tts`, `clon` | [GLM-TTS](#glm-tts) |
 | Inflect Micro v2 | `inflect_v2` | `tts` | [Inflect v2](#inflect-v2) |
 | OuteTTS | `outetts` | `tts`, `clon` | [OuteTTS](#outetts) |
@@ -776,7 +777,9 @@ limitations.
 ## sanoTTS
 
 sanoTTS is a family of very small offline TTS voices (English, Vietnamese,
-Indonesian; 294k to 2.27M parameters) with native GGML runtimes; the
+Indonesian, Czech, German, Spanish, French, Italian, Portuguese, Romanian,
+Russian, Turkish, Nepali and Hindi; 294k to 2.27M parameters) with native GGML
+runtimes; the
 smallest voice also runs on microcontrollers. The GGUF packages are
 standalone and download from Hugging Face. sanoTTS requires an external
 eSpeak-ng installation:
